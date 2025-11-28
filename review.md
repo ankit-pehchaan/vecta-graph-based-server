@@ -1,0 +1,6 @@
+- Make the functions async [Research a bit]
+- Remove redundant naming service/auth_servce.py-> service/auth.py
+- Check for interfaces and repositories (too much abstraction)
+- login flow
+- Middlewares for rate limiting
+- Learn about writing the test cases 
