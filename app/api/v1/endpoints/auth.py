@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends
-from app.schemas.user import UserCreateRequest, UserLoginRequest, UserData
+from app.schemas.user import UserCreateRequest, UserLoginRequest, UserData, TokenResponse
 from app.schemas.response import ApiResponse
 from app.services.auth import AuthService
 from app.repositories.memory import InMemoryUserRepository
@@ -29,12 +29,11 @@ async def register(
         return ApiResponse(
             success=True,
             message=get_status_message(status.HTTP_201_CREATED),
-            data={
-                "username": user.username,
-                "access_token": result["access_token"],
-                "refresh_token": result["refresh_token"],
-                "token_type": "bearer"
-            }
+            data=TokenResponse(
+                username=user.username,
+                access_token=result["access_token"],
+                refresh_token=result["refresh_token"]
+            )
         )
     except UserAlreadyExistsException as e:
         raise HTTPException(
@@ -68,12 +67,11 @@ async def login(
         return ApiResponse(
             success=True,
             message=get_status_message(status.HTTP_200_OK),
-            data={
-                "username": user.username,
-                "access_token": result["access_token"],
-                "refresh_token": result["refresh_token"],
-                "token_type": "bearer"
-            }
+            data=TokenResponse(
+                username=user.username,
+                access_token=result["access_token"],
+                refresh_token=result["refresh_token"]
+            )
         )
     except InvalidCredentialsException as e:
         raise HTTPException(

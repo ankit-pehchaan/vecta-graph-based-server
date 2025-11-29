@@ -35,3 +35,10 @@ class UserLoginRequest(BaseModel):
 
 class UserData(BaseModel):
     username: str
+
+
+class TokenResponse(BaseModel):
+    username: str
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
