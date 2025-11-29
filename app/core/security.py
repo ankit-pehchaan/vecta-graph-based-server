@@ -26,7 +26,7 @@ def create_access_token(data: dict) -> str:
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
-# TODO: Use different key to generate refresh token?
+# TODOS: Use different key to generate refresh token?
 def create_refresh_token(data: dict) -> str:
     """Create JWT refresh token."""
     to_encode = data.copy()

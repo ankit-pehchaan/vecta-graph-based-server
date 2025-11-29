@@ -28,5 +28,10 @@ class UserCreateRequest(BaseModel):
         return v
 
 
+class UserLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class UserData(BaseModel):
     username: str
