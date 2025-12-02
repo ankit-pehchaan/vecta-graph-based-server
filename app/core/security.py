@@ -1,4 +1,8 @@
+from datetime import datetime, timedelta, timezone
+from jose import jwt
 from passlib.context import CryptContext
+
+from app.core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -13,29 +17,46 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-from jose import jwt
-from datetime import datetime, timedelta
-from app.core.config import settings
-
-
 def create_access_token(data: dict) -> str:
     """Create JWT access token."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire, "type": "access"})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
-# TODO: Use different key to generate refresh token?
+
 def create_refresh_token(data: dict) -> str:
-    """Create JWT refresh token."""
+    """
+    Create JWT refresh token.
+    
+    Uses separate secret key if REFRESH_TOKEN_SECRET_KEY is configured,
+    otherwise falls back to SECRET_KEY. This provides additional security
+    by isolating refresh tokens from access tokens.
+    """
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    
+    secret_key = settings.REFRESH_TOKEN_SECRET_KEY or settings.SECRET_KEY
+    encoded_jwt = jwt.encode(to_encode, secret_key, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 
-def decode_token(token: str) -> dict:
-    """Decode and verify JWT token."""
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+def decode_token(token: str, token_type: str = "access") -> dict[str, str | int]:
+    """
+    Decode and verify JWT token.
+    
+    Args:
+        token: JWT token string
+        token_type: Type of token ("access" or "refresh") to determine which secret key to use
+    
+    Returns:
+        Decoded token payload
+    """
+    if token_type == "refresh" and settings.REFRESH_TOKEN_SECRET_KEY:
+        secret_key = settings.REFRESH_TOKEN_SECRET_KEY
+    else:
+        secret_key = settings.SECRET_KEY
+    
+    return jwt.decode(token, secret_key, algorithms=[settings.ALGORITHM])
