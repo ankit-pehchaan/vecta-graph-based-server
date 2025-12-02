@@ -80,7 +80,6 @@ class AuthService:
                 status_code=401
             )
 
-        # Check account status FIRST - return early if locked/disabled
         account_status_raw = user.get("account_status", AccountStatus.ACTIVE)
         account_status = self._normalize_account_status(account_status_raw)
         
@@ -90,19 +89,14 @@ class AuthService:
                 status_code=403
             )
         if account_status == AccountStatus.LOCKED.value:
-            # Return immediately - do not verify password for locked accounts
             raise AppException(
                 message=AuthErrorDetails.ACCOUNT_LOCKED,
                 status_code=403
             )
 
-        # Only proceed with password verification if account is active
-        # Verify password
         if not verify_password(password, user["hashed_password"]):
-            # Increment failed attempts
             await self.user_repository.increment_failed_attempts(username)
             
-            # Get updated user to check failed attempts count
             updated_user = await self.user_repository.get_by_username(username)
             if updated_user:
                 failed_attempts = updated_user.get("failed_login_attempts", 0)
@@ -114,8 +108,7 @@ class AuthService:
                 status_code=401
             )
 
-        # Re-check account status before allowing successful login
-        # Account might have been locked between initial check and password verification
+   
         final_user = await self.user_repository.get_by_username(username)
         if not final_user:
             raise AppException(
@@ -137,7 +130,6 @@ class AuthService:
                 status_code=403
             )
 
-        # Successful login - reset failed attempts
         await self.user_repository.reset_failed_attempts(username)
 
         tokens = self._generate_tokens(username)

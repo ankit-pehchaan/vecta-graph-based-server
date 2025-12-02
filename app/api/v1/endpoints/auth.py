@@ -34,7 +34,6 @@ async def register(
     """Register a new user and return JWT tokens."""
     result = await auth_service.register_user(user.username, user.password)
     
-    # Set tokens in HTTP-only cookies
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     
@@ -76,7 +75,6 @@ async def login(
     """Login user and return JWT tokens."""
     result = await auth_service.login_user(user.username, user.password)
     
-    # Set tokens in HTTP-only cookies
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     

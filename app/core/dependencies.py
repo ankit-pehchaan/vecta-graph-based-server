@@ -8,7 +8,6 @@ from app.core.handler import AppException
 from app.core.constants import AuthErrorDetails
 from app.core.config import settings
 
-# Initialize slowapi limiter with in-memory storage
 # Can be changed to Redis later: storage_uri="redis://localhost:6379"
 limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
 
@@ -31,7 +30,6 @@ def create_rate_limit_dependency(
     Returns:
         Dependency function that can be used with FastAPI Depends()
     """
-    # Convert window_seconds to slowapi format (e.g., "5/minute", "3/hour")
     if window_seconds == 60:
         rate_limit_str = f"{limit}/minute"
     elif window_seconds == 3600:
@@ -46,14 +44,11 @@ def create_rate_limit_dependency(
         Raises AppException with 429 status if rate limit exceeded.
         Returns None if within limit (allows request to proceed).
         """
-        # Get limiter from app state
         app_limiter = request.app.state.limiter
         
-        # Use slowapi's internal limiter (from limits library) to check rate limit
         key = get_remote_address(request)
         rate_limit = parse_many(rate_limit_str)[0]
         
-        # Check if limit exceeded
         if not app_limiter._limiter.hit(rate_limit, key):
             raise AppException(
                 message=error_message,
@@ -65,17 +60,14 @@ def create_rate_limit_dependency(
     return rate_limit_check
 
 
-# Pre-configured rate limit dependencies for auth endpoints using slowapi
 async def check_login_rate_limit(request: Request) -> None:
     """Rate limit dependency for login endpoint: 5 attempts per minute."""
     app_limiter = request.app.state.limiter
     rate_limit_str = f"{settings.LOGIN_RATE_LIMIT_PER_MINUTE}/minute"
     
-    # Use slowapi's internal limiter (from limits library) to check rate limit
     key = get_remote_address(request)
     rate_limit = parse_many(rate_limit_str)[0]
     
-    # Check if rate limit exceeded using slowapi's storage backend
     if not app_limiter._limiter.hit(rate_limit, key):
         raise AppException(
             message=AuthErrorDetails.RATE_LIMIT_EXCEEDED_LOGIN,

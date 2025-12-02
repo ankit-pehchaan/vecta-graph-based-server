@@ -11,7 +11,6 @@ class AccountStatus(StrEnum):
 class AuthErrorDetails(StrEnum):
     """Authentication and authorization related error messages."""
     
-    # Registration Errors
     USER_ALREADY_EXISTS = "User already exists"
     USERNAME_TOO_SHORT = "Username must be at least 5 characters long"
     PASSWORD_TOO_SHORT = "Password must be at least 8 characters long"
@@ -20,17 +19,14 @@ class AuthErrorDetails(StrEnum):
     PASSWORD_MISSING_NUMBER = "Password must contain at least one number"
     PASSWORD_MISSING_SPECIAL = "Password must contain at least one special character"
     
-    # Login Errors
     USER_NOT_FOUND = "User not found"
     INVALID_PASSWORD = "Invalid password"
     ACCOUNT_LOCKED = "Account has been locked due to multiple failed login attempts"
     ACCOUNT_DISABLED = "Account has been disabled"
     
-    # Rate Limiting Errors
     RATE_LIMIT_EXCEEDED_LOGIN = "Too many login attempts. Please try again later"
     RATE_LIMIT_EXCEEDED_REGISTER = "Too many registration attempts. Please try again later"
     
-    # Token Errors
     TOKEN_EXPIRED = "Token has expired"
     TOKEN_INVALID = "Invalid token"
     TOKEN_MISSING = "Token is required"

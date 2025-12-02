@@ -17,7 +17,6 @@ from app.core.config import settings
 
 app = FastAPI(title="FastAPI Auth Backend", version="1.0.0")
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.BASE_URL] if settings.ENVIRONMENT == "prod" else ["*"],
@@ -26,7 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize slowapi limiter with app instance
 app.state.limiter = limiter
 
 # Register global exception handlers (apply to all endpoints)

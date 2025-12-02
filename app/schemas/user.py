@@ -38,7 +38,7 @@ class UserLoginRequest(BaseModel):
 
 
 class UserData(BaseModel):
-    model_config = ConfigDict(extra='ignore') # Allow extra fields for internal user data
+    model_config = ConfigDict(extra='ignore')
     username: str
     account_status: str | None = None
 

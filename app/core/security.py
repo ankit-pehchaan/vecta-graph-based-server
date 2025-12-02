@@ -38,7 +38,6 @@ def create_refresh_token(data: dict) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
     
-    # Use separate key for refresh tokens if configured, otherwise use main secret key
     secret_key = settings.REFRESH_TOKEN_SECRET_KEY or settings.SECRET_KEY
     encoded_jwt = jwt.encode(to_encode, secret_key, algorithm=settings.ALGORITHM)
     return encoded_jwt
@@ -55,7 +54,6 @@ def decode_token(token: str, token_type: str = "access") -> dict[str, str | int]
     Returns:
         Decoded token payload
     """
-    # Use appropriate secret key based on token type
     if token_type == "refresh" and settings.REFRESH_TOKEN_SECRET_KEY:
         secret_key = settings.REFRESH_TOKEN_SECRET_KEY
     else:

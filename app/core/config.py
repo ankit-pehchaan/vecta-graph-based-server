@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     DB_USER: str = Field(default="postgres", description="Database user")
     DB_PASSWORD: str = Field(default="", description="Database password")
     
-    # Rate Limiting Configuration
     LOGIN_RATE_LIMIT_PER_MINUTE: int = Field(default=5, description="Maximum login attempts per minute per IP")
     REGISTER_RATE_LIMIT_PER_HOUR: int = Field(default=3, description="Maximum registration attempts per hour per IP")
     MAX_FAILED_LOGIN_ATTEMPTS: int = Field(default=5, description="Maximum failed login attempts before account lockout")
@@ -69,7 +68,7 @@ class Settings(BaseSettings):
                 self.COOKIE_SECURE = False
             # Default to localhost if BASE_URL is production default
             if self.BASE_URL == "http://localhost:8000":
-                pass  # Already correct for dev
+                pass  
         
         return self
 
