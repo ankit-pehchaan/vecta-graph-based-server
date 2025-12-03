@@ -1,12 +1,13 @@
 """Dependencies for FastAPI endpoints."""
 from typing import Callable
-from fastapi import Request
+from fastapi import Request, WebSocket
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from limits import parse_many
 from app.core.handler import AppException
-from app.core.constants import AuthErrorDetails
+from app.core.constants import AuthErrorDetails, GeneralErrorDetails
 from app.core.config import settings
+from app.core.security import decode_token_from_websocket
 
 # Can be changed to Redis later: storage_uri="redis://localhost:6379"
 limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
@@ -92,4 +93,41 @@ async def check_register_rate_limit(request: Request) -> None:
         )
     
     return None
+
+
+async def get_current_user_websocket(websocket: WebSocket) -> str:
+    """
+    Authenticate WebSocket connection using JWT token.
+    
+    Extracts token from query parameters or headers and validates it.
+    
+    Args:
+        websocket: WebSocket connection
+    
+    Returns:
+        Username from token payload
+    
+    Raises:
+        AppException: If authentication fails
+    """
+    query_params = dict(websocket.query_params)
+    headers = dict(websocket.headers)
+    
+    from app.core.security import decode_token_from_websocket
+    token_payload = decode_token_from_websocket(query_params, headers)
+    
+    if not token_payload:
+        raise AppException(
+            message=GeneralErrorDetails.UNAUTHORIZED,
+            status_code=401
+        )
+    
+    username = token_payload.get("sub")
+    if not username:
+        raise AppException(
+            message=GeneralErrorDetails.UNAUTHORIZED,
+            status_code=401
+        )
+    
+    return username
 

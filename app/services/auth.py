@@ -41,7 +41,7 @@ class AuthService:
         # Default to ACTIVE for invalid status values
         return AccountStatus.ACTIVE.value
 
-    async def register_user(self, username: str, password: str) -> dict[str, str | dict]:
+    async def register_user(self, username: str, password: str, name: str) -> dict[str, str | dict]:
         """Register a new user with hashed password and return tokens."""
         existing_user = await self.user_repository.get_by_username(username)
         if existing_user:
@@ -55,6 +55,7 @@ class AuthService:
 
         user_data = {
             "username": username,
+            "name": name,
             "hashed_password": hashed_password,
             "account_status": AccountStatus.ACTIVE,
             "failed_login_attempts": 0,
