@@ -37,7 +37,13 @@ class Settings(BaseSettings):
     
     LOGIN_RATE_LIMIT_PER_MINUTE: int = Field(default=5, description="Maximum login attempts per minute per IP")
     REGISTER_RATE_LIMIT_PER_HOUR: int = Field(default=3, description="Maximum registration attempts per hour per IP")
+    OTP_VERIFY_RATE_LIMIT_PER_MINUTE: int = Field(default=5, description="Maximum OTP verification attempts per minute per IP")
     MAX_FAILED_LOGIN_ATTEMPTS: int = Field(default=5, description="Maximum failed login attempts before account lockout")
+    
+    # OTP Configuration
+    OTP_EXPIRY_MINUTES: int = Field(default=3, description="OTP expiration time in minutes")
+    MAX_OTP_ATTEMPTS: int = Field(default=5, description="Maximum OTP verification attempts")
+    FIXED_OTP: str | None = Field(default="123456", description="Fixed OTP for testing (leave empty for random OTP in production)")
     
     @field_validator("ACCESS_TOKEN_EXPIRE_MINUTES", "REFRESH_TOKEN_EXPIRE_DAYS")
     @classmethod

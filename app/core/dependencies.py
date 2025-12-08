@@ -95,6 +95,23 @@ async def check_register_rate_limit(request: Request) -> None:
     return None
 
 
+async def check_otp_verify_rate_limit(request: Request) -> None:
+    """Rate limit dependency for OTP verification endpoint: 5 attempts per minute."""
+    app_limiter = request.app.state.limiter
+    rate_limit_str = f"{settings.OTP_VERIFY_RATE_LIMIT_PER_MINUTE}/minute"
+    
+    key = get_remote_address(request)
+    rate_limit = parse_many(rate_limit_str)[0]
+    
+    if not app_limiter._limiter.hit(rate_limit, key):
+        raise AppException(
+            message=AuthErrorDetails.RATE_LIMIT_EXCEEDED_OTP_VERIFY,
+            status_code=429
+        )
+    
+    return None
+
+
 async def get_current_user_websocket(websocket: WebSocket) -> str:
     """
     Authenticate WebSocket connection using JWT token.
