@@ -8,3 +8,8 @@ python-multipart
 python-dotenv
 pydantic-settings
 slowapi
+agno
+websockets
+lancedb
+openai
+sqlalchemy

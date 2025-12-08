@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["dev", "prod"] = Field(default="dev", description="Application environment")
     
     BASE_URL: str = Field(default="http://localhost:8000", description="Base URL for the API")
+    FRONTEND_URL: str = Field(default="http://localhost:5173", description="Frontend URL for CORS")
     
     SECRET_KEY: str = Field(default="secret-key", description="Secret key for JWT signing")
     ALGORITHM: str = Field(default="HS256", description="JWT algorithm")
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
     DB_NAME: str = Field(default="vecta_db", description="Database name")
     DB_USER: str = Field(default="postgres", description="Database user")
     DB_PASSWORD: str = Field(default="", description="Database password")
+    
+    # OpenAI Configuration
+    OPENAI_API_KEY: str | None = Field(default=None, description="OpenAI API key for Agno agent")
     
     LOGIN_RATE_LIMIT_PER_MINUTE: int = Field(default=5, description="Maximum login attempts per minute per IP")
     REGISTER_RATE_LIMIT_PER_HOUR: int = Field(default=3, description="Maximum registration attempts per hour per IP")

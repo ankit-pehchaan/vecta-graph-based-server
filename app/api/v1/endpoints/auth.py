@@ -32,7 +32,7 @@ async def register(
     auth_service: AuthService = Depends(get_auth_service)
 ):
     """Register a new user and return JWT tokens."""
-    result = await auth_service.register_user(user.username, user.password)
+    result = await auth_service.register_user(user.username, user.password, user.name)
     
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
@@ -54,11 +54,16 @@ async def register(
         max_age=int(refresh_token_expires.total_seconds())
     )
     
+    # Get user name from the user data returned by auth service
+    user_data = result.get("user", {})
+    user_name = user_data.get("name") if isinstance(user_data, dict) else user.name
+    
     return ApiResponse(
         success=True,
         message="Registration successful",
         data=TokenResponse(
             username=user.username,
+            name=user_name,
             access_token=result["access_token"],
             refresh_token=result["refresh_token"]
         )
@@ -95,11 +100,16 @@ async def login(
         max_age=int(refresh_token_expires.total_seconds())
     )
     
+    # Get user name from the user data returned by auth service
+    user_data = result.get("user", {})
+    user_name = user_data.get("name") if isinstance(user_data, dict) else None
+    
     return ApiResponse(
         success=True,
         message="Login successful",
         data=TokenResponse(
             username=user.username,
+            name=user_name,
             access_token=result["access_token"],
             refresh_token=result["refresh_token"]
         )

@@ -7,6 +7,7 @@ class UserCreateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     username: str
     password: str
+    name: str
 
     @field_validator('username')
     @classmethod
@@ -40,12 +41,14 @@ class UserLoginRequest(BaseModel):
 class UserData(BaseModel):
     model_config = ConfigDict(extra='ignore')
     username: str
+    name: str | None = None
     account_status: str | None = None
 
 
 class TokenResponse(BaseModel):
     model_config = ConfigDict(extra='ignore')
     username: str
+    name: str | None = None
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
