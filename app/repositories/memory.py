@@ -7,14 +7,24 @@ from app.core.constants import AccountStatus
 class InMemoryUserRepository(IUserRepository):
     def __init__(self):
         self._users: dict[str, dict] = {}
+        self._users_by_email: dict[str, str] = {}  
 
     async def get_by_username(self, username: str) -> Optional[dict]:
         """Retrieve a user by username."""
         return self._users.get(username)
 
+    async def get_by_email(self, email: str) -> Optional[dict]:
+        """Retrieve a user by email."""
+        username = self._users_by_email.get(email.lower())
+        if username:
+            return self._users.get(username)
+        return None
+
     async def save(self, user_data: dict) -> dict:
         """Save user data and return the saved user."""
         username = user_data["username"]
+        email = user_data["email"].lower()
+        
         if "account_status" not in user_data:
             user_data["account_status"] = AccountStatus.ACTIVE
 
@@ -26,7 +36,10 @@ class InMemoryUserRepository(IUserRepository):
             user_data["last_failed_attempt"] = None
         if "locked_at" not in user_data:
             user_data["locked_at"] = None
+        
         self._users[username] = user_data
+        self._users_by_email[email] = username
+        
         return user_data
 
     async def increment_failed_attempts(self, username: str) -> None:
@@ -68,3 +81,53 @@ class InMemoryUserRepository(IUserRepository):
         if username not in self._users:
             return
         self._users[username]["hashed_password"] = hashed_password
+
+
+from app.interfaces.verification import IVerificationRepository
+
+
+class InMemoryVerificationRepository(IVerificationRepository):
+    def __init__(self):
+        self._by_token: dict[str, dict] = {}  # token -> verification data (for otp verification lookup)
+        self._by_email: dict[str, str] = {}  # email -> token mapping (for checking duplicate registration)
+
+    async def save(self, token: str, email: str, data: dict) -> dict:
+        """Save pending verification data with dual indexing."""
+        email = email.lower()
+        self._by_token[token] = data
+        self._by_email[email] = token
+        return data
+
+    async def get_by_token(self, token: str) -> Optional[dict]:
+        """Retrieve pending verification by token."""
+        return self._by_token.get(token)
+
+    async def get_by_email(self, email: str) -> Optional[dict]:
+        """Retrieve pending verification by email."""
+        token = self._by_email.get(email.lower())
+        if token:
+            return self._by_token.get(token)
+        return None
+
+    async def delete_by_token(self, token: str) -> None:
+        """Delete pending verification by token."""
+        if token in self._by_token:
+            data = self._by_token[token]
+            email = data.get("email", "").lower()
+            del self._by_token[token]
+            if email and email in self._by_email:
+                del self._by_email[email]
+
+    async def delete_by_email(self, email: str) -> None:
+        """Delete pending verification by email."""
+        email = email.lower()
+        token = self._by_email.get(email)
+        if token:
+            if token in self._by_token:
+                del self._by_token[token]
+            del self._by_email[email]
+
+    async def increment_attempts(self, token: str) -> None:
+        """Increment failed verification attempts."""
+        if token in self._by_token:
+            self._by_token[token]["attempts"] = self._by_token[token].get("attempts", 0) + 1

@@ -11,6 +11,11 @@ class IUserRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_by_email(self, email: str) -> Optional[dict]:
+        """Retrieve a user by email."""
+        pass
+
+    @abstractmethod
     async def save(self, user_data: dict) -> dict:
         """Save user data and return the saved user."""
         pass

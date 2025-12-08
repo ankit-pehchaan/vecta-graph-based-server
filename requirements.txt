@@ -13,3 +13,4 @@ websockets
 lancedb
 openai
 sqlalchemy
+requests

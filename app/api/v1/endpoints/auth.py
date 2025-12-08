@@ -3,40 +3,86 @@ from fastapi import APIRouter, Response, status, Depends
 from app.schemas.user import (
     UserCreateRequest,
     UserLoginRequest,
-    TokenResponse
+    TokenResponse,
+    RegistrationInitiateRequest,
+    RegistrationInitiateResponse,
+    OTPVerifyRequest
 )
 from app.schemas.response import ApiResponse
 from app.services.auth import AuthService
-from app.repositories.memory import InMemoryUserRepository
+from app.repositories.memory import InMemoryUserRepository, InMemoryVerificationRepository
 from app.core.config import settings
 from app.core.dependencies import (
     check_login_rate_limit,
-    check_register_rate_limit
+    check_register_rate_limit,
+    check_otp_verify_rate_limit
 )
 
 router = APIRouter()
 
 _user_repository = InMemoryUserRepository()
+_verification_repository = InMemoryVerificationRepository()
 
 
 async def get_auth_service() -> AuthService:
     """Dependency injection for AuthService."""
-    return AuthService(user_repository=_user_repository)
+    return AuthService(
+        user_repository=_user_repository,
+        verification_repository=_verification_repository
+    )
 
 
-@router.post("/register", response_model=ApiResponse, status_code=status.HTTP_201_CREATED)
-async def register(
-    user: UserCreateRequest,
+@router.post("/register/initiate", response_model=ApiResponse, status_code=status.HTTP_200_OK)
+async def register_initiate(
+    user: RegistrationInitiateRequest,
     response: Response,
     _: None = Depends(check_register_rate_limit),
     auth_service: AuthService = Depends(get_auth_service)
 ):
-    """Register a new user and return JWT tokens."""
-    result = await auth_service.register_user(user.username, user.password, user.name)
+    """Initiate registration by sending OTP to email."""
+    result = await auth_service.initiate_registration(
+        name=user.name,
+        username=user.username,
+        email=user.email,
+        password=user.password
+    )
+    
+    # Set verification token in cookie (expires in 3 minutes)
+    response.set_cookie(
+        key="verification_token",
+        value=result["verification_token"],
+        httponly=settings.COOKIE_HTTP_ONLY,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAME_SITE,
+        max_age=settings.OTP_EXPIRY_MINUTES * 60  # Convert minutes to seconds
+    )
+    
+    return ApiResponse(
+        success=True,
+        message="OTP sent to your email",
+        data=RegistrationInitiateResponse(
+            verification_token=result["verification_token"]
+        )
+    )
+
+
+@router.post("/register/verify", response_model=ApiResponse, status_code=status.HTTP_201_CREATED)
+async def register_verify(
+    request: OTPVerifyRequest,
+    response: Response,
+    _: None = Depends(check_otp_verify_rate_limit),
+    auth_service: AuthService = Depends(get_auth_service)
+):
+    """Verify OTP and complete registration."""
+    result = await auth_service.verify_otp(
+        verification_token=request.verification_token,
+        otp=request.otp
+    )
     
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     
+    # Set access and refresh tokens
     response.set_cookie(
         key="access_token",
         value=result["access_token"],
@@ -54,16 +100,20 @@ async def register(
         max_age=int(refresh_token_expires.total_seconds())
     )
     
-    # Get user name from the user data returned by auth service
-    user_data = result.get("user", {})
-    user_name = user_data.get("name") if isinstance(user_data, dict) else user.name
+    # Clear verification token cookie
+    response.delete_cookie(
+        key="verification_token",
+        httponly=settings.COOKIE_HTTP_ONLY,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAME_SITE
+    )
     
     return ApiResponse(
         success=True,
         message="Registration successful",
         data=TokenResponse(
-            username=user.username,
-            name=user_name,
+            username=result["username"],
+            name=result["name"],
             access_token=result["access_token"],
             refresh_token=result["refresh_token"]
         )

@@ -32,6 +32,15 @@ class AuthErrorDetails(StrEnum):
     TOKEN_MISSING = "Token is required"
     REFRESH_TOKEN_INVALID = "Invalid refresh token"
     REFRESH_TOKEN_EXPIRED = "Refresh token has expired"
+    
+    # OTP Verification Errors
+    EMAIL_ALREADY_EXISTS = "Email already registered"
+    VERIFICATION_IN_PROGRESS = "Verification already in progress. Please check your email"
+    VERIFICATION_TOKEN_INVALID = "Invalid verification token"
+    OTP_EXPIRED = "OTP expired. Please register again"
+    OTP_INVALID = "Invalid OTP"
+    OTP_ATTEMPTS_EXCEEDED = "Too many failed attempts"
+    RATE_LIMIT_EXCEEDED_OTP_VERIFY = "Too many OTP verification attempts. Please try again later"
 
 
 class ChatErrorDetails(StrEnum):
