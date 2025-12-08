@@ -1,0 +1,187 @@
+import os
+from typing import Optional
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+from agno.db.sqlite import SqliteDb
+from app.interfaces.user import IUserRepository
+from app.interfaces.financial_profile import IFinancialProfileRepository
+from app.core.config import settings
+
+
+class AgnoAgentService:
+    """Service for managing Agno financial adviser agents.
+    
+    Creates and reuses agents per user for performance (per .cursorrules).
+    Each user gets their own agent instance with session history.
+    """
+    
+    def __init__(
+        self,
+        user_repository: IUserRepository,
+        profile_repository: IFinancialProfileRepository
+    ):
+        self.user_repository = user_repository
+        self.profile_repository = profile_repository
+        self._agents: dict[str, Agent] = {}  # Cache agents per user
+        self._db_dir = "tmp/agents"
+        
+        # Create directory for agent databases if it doesn't exist
+        os.makedirs(self._db_dir, exist_ok=True)
+        
+        # Set OpenAI API key from config if available
+        if settings.OPENAI_API_KEY:
+            os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
+    
+    def _get_agent_instructions(self, user_name: Optional[str] = None) -> str:
+        """Get instructions for the financial adviser agent."""
+        base_instructions = """You are an experienced Australian financial adviser with deep expertise in:
+- Superannuation and retirement planning
+- Australian tax regulations and strategies
+- Investment portfolio management
+- Insurance and risk management
+- Financial goal setting and achievement
+
+CRITICAL CONVERSATION RULES:
+1. Ask ONE or TWO questions at a time - never overwhelm the client with multiple questions
+2. Follow a natural, step-by-step discovery process:
+   - First: Understand WHAT they want (their goal)
+   - Second: Understand WHY they want it (motivation, deeper reasons)
+   - Third: Understand HOW they envision achieving it (their current thinking)
+   - Fourth: Assess their financial position (whether they're ready/capable)
+3. Be conversational and empathetic - this is a dialogue, not an interrogation
+4. Build understanding gradually - don't rush to gather all information at once
+5. After understanding their goal and motivation, naturally transition to financial assessment
+6. Consider Australian financial context (superannuation, tax, regulations, market conditions)
+7. Provide gentle guidance and insights as you learn about them
+8. Keep responses concise and focused - avoid long paragraphs unless necessary
+
+Your approach:
+- Engage in natural, conversational dialogue - you're not a questionnaire bot
+- Build rapport and trust with clients
+- Ask follow-up questions to understand deeper motivations behind goals
+- Assess if clients are at the right financial stage to achieve their goals
+- Provide ongoing advice and recommendations, not just fact-finding
+- Help prioritize what clients should focus on first
+- Consider Australian-specific financial context (superannuation, tax, regulations, market conditions)
+- Generate detailed investment strategies when appropriate
+
+Be conversational, empathetic, and professional. Act like a real financial adviser having a natural conversation with a client."""
+        
+        if user_name:
+            return f"{base_instructions}\n\nYou are speaking with {user_name}. Use their name naturally in conversation."
+        
+        return base_instructions
+    
+    async def get_agent(self, username: str) -> Agent:
+        """
+        Get or create an Agno agent for a user.
+        
+        Reuses existing agent if available (per .cursorrules - never create agents in loops).
+        
+        Args:
+            username: Username to get agent for
+        
+        Returns:
+            Agent instance for the user
+        """
+        if username in self._agents:
+            return self._agents[username]
+        
+        # Get user name for personalized instructions
+        user = await self.user_repository.get_by_username(username)
+        user_name = user.get("name") if user else None
+        
+        # Create agent with per-user database
+        db_file = os.path.join(self._db_dir, f"agent_{username}.db")
+        
+        agent = Agent(
+            name="Financial Adviser",
+            model=OpenAIChat(id="gpt-4.1"),
+            instructions=self._get_agent_instructions(user_name),
+            db=SqliteDb(db_file=db_file),
+            user_id=username,
+            add_history_to_context=True,
+            num_history_runs=10,  # Keep last 10 conversations in context
+            markdown=True,
+            debug_mode=False
+        )
+        
+        # Cache agent for reuse
+        self._agents[username] = agent
+        
+        return agent
+    
+    async def is_first_time_user(self, username: str) -> bool:
+        """
+        Check if this is the first time the user is using the advice service.
+        
+        Args:
+            username: Username to check
+        
+        Returns:
+            True if first time, False otherwise
+        """
+        profile = await self.profile_repository.get_by_username(username)
+        return profile is None
+    
+    async def get_conversation_summary(self, username: str) -> Optional[str]:
+        """
+        Get a summary of previous conversations for returning users.
+        
+        Args:
+            username: Username to get summary for
+        
+        Returns:
+            Summary string or None if no previous conversations
+        """
+        # Check if agent has any history
+        # Note: Agno stores history in the database, but we can check if there are previous runs
+        # For now, we'll return a simple summary based on profile existence
+        profile = await self.profile_repository.get_by_username(username)
+        
+        if not profile:
+            return None
+        
+        # Build summary from profile
+        summary_parts = []
+        
+        if profile.get("goals"):
+            goal_count = len(profile.get("goals", []))
+            summary_parts.append(f"discussed {goal_count} financial goal(s)")
+        
+        if profile.get("assets"):
+            asset_count = len(profile.get("assets", []))
+            summary_parts.append(f"reviewed {asset_count} asset(s)")
+        
+        if profile.get("financial_stage"):
+            summary_parts.append(f"assessed financial stage: {profile.get('financial_stage')}")
+        
+        if summary_parts:
+            return "Previously, we " + ", ".join(summary_parts) + "."
+        
+        return None
+    
+    async def generate_greeting(self, username: str) -> str:
+        """
+        Generate appropriate greeting for user (first-time or returning).
+        
+        Args:
+            username: Username to generate greeting for
+        
+        Returns:
+            Greeting message
+        """
+        user = await self.user_repository.get_by_username(username)
+        user_name = user.get("name") if user else username
+        
+        is_first_time = await self.is_first_time_user(username)
+        
+        if is_first_time:
+            return f"Hello {user_name}, I'm your financial adviser. I'm here to help you with your financial goals, investments, superannuation, and any questions you have about your financial future. How can I assist you today?"
+        else:
+            summary = await self.get_conversation_summary(username)
+            if summary:
+                return f"Welcome back {user_name}! {summary} How can I continue assisting you today?"
+            else:
+                return f"Welcome back {user_name}! How can I continue assisting you with your financial goals today?"
+
