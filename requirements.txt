@@ -14,3 +14,5 @@ lancedb
 openai
 sqlalchemy
 requests
+aiosmtplib
+email-validator
