@@ -47,14 +47,13 @@ async def register_initiate(
         password=user.password
     )
     
-    # Set verification token in cookie (expires in 3 minutes)
     response.set_cookie(
         key="verification_token",
         value=result["verification_token"],
         httponly=settings.COOKIE_HTTP_ONLY,
         secure=settings.COOKIE_SECURE,
         samesite=settings.COOKIE_SAME_SITE,
-        max_age=settings.OTP_EXPIRY_MINUTES * 60  # Convert minutes to seconds
+        max_age=settings.OTP_EXPIRY_MINUTES * 60
     )
     
     return ApiResponse(
@@ -83,7 +82,6 @@ async def register_verify(
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     
-    # Set access and refresh tokens
     response.set_cookie(
         key="access_token",
         value=result["access_token"],
@@ -101,7 +99,6 @@ async def register_verify(
         max_age=int(refresh_token_expires.total_seconds())
     )
     
-    # Clear verification token cookie
     response.delete_cookie(
         key="verification_token",
         httponly=settings.COOKIE_HTTP_ONLY,
@@ -151,7 +148,6 @@ async def login(
         max_age=int(refresh_token_expires.total_seconds())
     )
     
-    # Get user name from the user data returned by auth service
     user_data = result.get("user", {})
     user_name = user_data.get("name") if isinstance(user_data, dict) else None
     
