@@ -25,9 +25,9 @@ class AuthService:
         self.user_repository = user_repository
         self.verification_repository = verification_repository
 
-    def _generate_tokens(self, username: str) -> dict[str, str]:
+    def _generate_tokens(self, email: str) -> dict[str, str]:
         """Generate access and refresh tokens for a user."""
-        token_data = {"sub": username}
+        token_data = {"sub": email}
         return {
             "access_token": create_access_token(token_data),
             "refresh_token": create_refresh_token(token_data)
@@ -85,7 +85,6 @@ class AuthService:
     async def initiate_registration(
         self,
         name: str,
-        username: str,
         email: str,
         password: str
     ) -> dict[str, str]:
@@ -93,7 +92,6 @@ class AuthService:
         
         Args:
             name: User's full name
-            username: Desired username
             email: User's email address
             password: User's password (will be hashed)
             
@@ -101,18 +99,9 @@ class AuthService:
             Dictionary with verification_token
             
         Raises:
-            AppException: If username/email exists or verification in progress
+            AppException: If email exists or verification in progress
         """
-        # 1. Check if username already exists
-        existing_user = await self.user_repository.get_by_username(username)
-        if existing_user:
-            raise AppException(
-                message=AuthErrorDetails.USER_ALREADY_EXISTS,
-                status_code=409,
-                data={"username": username}
-            )
-        
-        # 2. Check if email already exists
+        # 1. Check if email already exists
         existing_email = await self.user_repository.get_by_email(email)
         if existing_email:
             raise AppException(
@@ -121,7 +110,7 @@ class AuthService:
                 data={"email": email}
             )
         
-        # 3. Check for pending verification
+        # 2. Check for pending verification
         pending = await self.verification_repository.get_by_email(email)
         if pending:
             # Check if expired
@@ -133,16 +122,15 @@ class AuthService:
             # Expired - delete old verification
             await self.verification_repository.delete_by_email(email)
         
-        # 4. Generate verification token and OTP
+        # 3. Generate verification token and OTP
         verification_token = str(uuid.uuid4())
         otp = self._generate_otp()
         hashed_password = get_password_hash(password)
         
-        # 5. Store pending verification
+        # 4. Store pending verification
         verification_data = {
             "email": email,
             "name": name,
-            "username": username,
             "hashed_password": hashed_password,
             "otp": otp,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -150,7 +138,7 @@ class AuthService:
         }
         await self.verification_repository.save(verification_token, email, verification_data)
         
-        # 6. Send OTP email
+        # 5. Send OTP email
         await send_otp_email(email, otp)
         
         return {"verification_token": verification_token}
@@ -163,7 +151,7 @@ class AuthService:
             otp: One-time password to verify
             
         Returns:
-            Dictionary with username, access_token and refresh_token
+            Dictionary with email, name, access_token and refresh_token
             
         Raises:
             AppException: If token invalid, OTP expired, too many attempts, or OTP invalid
@@ -203,7 +191,6 @@ class AuthService:
         # 5. OTP valid - create user account
         user_data = {
             "name": pending['name'],
-            "username": pending['username'],
             "email": pending['email'],
             "hashed_password": pending['hashed_password'],
             "account_status": AccountStatus.ACTIVE,
@@ -214,52 +201,21 @@ class AuthService:
         await self.user_repository.save(user_data)
         
         # 6. Generate tokens
-        tokens = self._generate_tokens(pending['username'])
+        tokens = self._generate_tokens(pending['email'])
         
         # 7. Delete pending verification
         await self.verification_repository.delete_by_token(verification_token)
         
         return {
-            "username": pending['username'],
+            "email": pending['email'],
             "name": pending['name'],
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"]
         }
 
-    async def register_user(self, username: str, password: str, name: str) -> dict[str, str | dict]:
-        """Register a new user with hashed password and return tokens."""
-        existing_user = await self.user_repository.get_by_username(username)
-        if existing_user:
-            raise AppException(
-                message=AuthErrorDetails.USER_ALREADY_EXISTS,
-                status_code=409,
-                data={"username": username}
-            )
-
-        hashed_password = get_password_hash(password)
-
-        user_data = {
-            "username": username,
-            "name": name,
-            "hashed_password": hashed_password,
-            "account_status": AccountStatus.ACTIVE,
-            "failed_login_attempts": 0,
-            "last_failed_attempt": None,
-            "locked_at": None
-        }
-        saved_user = await self.user_repository.save(user_data)
-        
-        tokens = self._generate_tokens(username)
-        
-        return {
-            "user": saved_user,
-            "access_token": tokens["access_token"],
-            "refresh_token": tokens["refresh_token"]
-        }
-
-    async def login_user(self, username: str, password: str) -> dict[str, str | dict]:
+    async def login_user(self, email: str, password: str) -> dict[str, str | dict]:
         """Authenticate user and return tokens."""
-        user = await self.user_repository.get_by_username(username)
+        user = await self.user_repository.get_by_email(email)
         if not user:
             raise AppException(
                 message=AuthErrorDetails.USER_NOT_FOUND,
@@ -281,13 +237,13 @@ class AuthService:
             )
 
         if not verify_password(password, user["hashed_password"]):
-            await self.user_repository.increment_failed_attempts(username)
+            await self.user_repository.increment_failed_attempts(email)
             
-            updated_user = await self.user_repository.get_by_username(username)
+            updated_user = await self.user_repository.get_by_email(email)
             if updated_user:
                 failed_attempts = updated_user.get("failed_login_attempts", 0)
                 if failed_attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS:
-                    await self.user_repository.update_account_status(username, AccountStatus.LOCKED)
+                    await self.user_repository.update_account_status(email, AccountStatus.LOCKED)
             
             raise AppException(
                 message=AuthErrorDetails.INVALID_PASSWORD,
@@ -295,7 +251,7 @@ class AuthService:
             )
 
    
-        final_user = await self.user_repository.get_by_username(username)
+        final_user = await self.user_repository.get_by_email(email)
         if not final_user:
             raise AppException(
                 message=AuthErrorDetails.USER_NOT_FOUND,
@@ -316,9 +272,9 @@ class AuthService:
                 status_code=403
             )
 
-        await self.user_repository.reset_failed_attempts(username)
+        await self.user_repository.reset_failed_attempts(email)
 
-        tokens = self._generate_tokens(username)
+        tokens = self._generate_tokens(email)
         
         return {
             "user": user,

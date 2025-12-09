@@ -1,7 +1,6 @@
 from datetime import timedelta
-from fastapi import APIRouter, Response, status, Depends
+from fastapi import APIRouter, Response, status, Depends, Cookie
 from app.schemas.user import (
-    UserCreateRequest,
     UserLoginRequest,
     TokenResponse,
     RegistrationInitiateRequest,
@@ -17,6 +16,8 @@ from app.core.dependencies import (
     check_register_rate_limit,
     check_otp_verify_rate_limit
 )
+from app.core.handler import AppException
+from app.core.constants import AuthErrorDetails
 
 router = APIRouter()
 
@@ -42,7 +43,6 @@ async def register_initiate(
     """Initiate registration by sending OTP to email."""
     result = await auth_service.initiate_registration(
         name=user.name,
-        username=user.username,
         email=user.email,
         password=user.password
     )
@@ -70,12 +70,13 @@ async def register_initiate(
 async def register_verify(
     request: OTPVerifyRequest,
     response: Response,
+    verification_token: str = Cookie(...),
     _: None = Depends(check_otp_verify_rate_limit),
     auth_service: AuthService = Depends(get_auth_service)
 ):
-    """Verify OTP and complete registration."""
+    """Verify OTP and complete registration. Token is read from cookie."""
     result = await auth_service.verify_otp(
-        verification_token=request.verification_token,
+        verification_token=verification_token,
         otp=request.otp
     )
     
@@ -112,7 +113,7 @@ async def register_verify(
         success=True,
         message="Registration successful",
         data=TokenResponse(
-            username=result["username"],
+            email=result["email"],
             name=result["name"],
             access_token=result["access_token"],
             refresh_token=result["refresh_token"]
@@ -128,7 +129,7 @@ async def login(
     auth_service: AuthService = Depends(get_auth_service)
 ):
     """Login user and return JWT tokens."""
-    result = await auth_service.login_user(user.username, user.password)
+    result = await auth_service.login_user(user.email, user.password)
     
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
@@ -158,7 +159,7 @@ async def login(
         success=True,
         message="Login successful",
         data=TokenResponse(
-            username=user.username,
+            email=user.email,
             name=user_name,
             access_token=result["access_token"],
             refresh_token=result["refresh_token"]
