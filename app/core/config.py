@@ -43,7 +43,15 @@ class Settings(BaseSettings):
     # OTP Configuration
     OTP_EXPIRY_MINUTES: int = Field(default=3, description="OTP expiration time in minutes")
     MAX_OTP_ATTEMPTS: int = Field(default=5, description="Maximum OTP verification attempts")
-    FIXED_OTP: str | None = Field(default="123456", description="Fixed OTP for testing (leave empty for random OTP in production)")
+    FIXED_OTP: str | None = Field(default="", description="Fixed OTP for testing (leave empty for random OTP in production)")
+    
+    # Email Configuration (SMTP)
+    SMTP_HOST: str = Field(default="smtp.gmail.com", description="SMTP server host")
+    SMTP_PORT: int = Field(default=587, description="SMTP server port")
+    SMTP_USERNAME: str = Field(default="", description="SMTP username/email")
+    SMTP_PASSWORD: str = Field(default="", description="SMTP password/app password")
+    SMTP_FROM_EMAIL: str = Field(default="", description="From email address")
+    SMTP_FROM_NAME: str = Field(default="Vecta Finance", description="From name displayed in emails")
     
     @field_validator("ACCESS_TOKEN_EXPIRE_MINUTES", "REFRESH_TOKEN_EXPIRE_DAYS")
     @classmethod
