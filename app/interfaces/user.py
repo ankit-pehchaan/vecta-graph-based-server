@@ -6,11 +6,6 @@ from app.core.constants import AccountStatus
 
 class IUserRepository(ABC):
     @abstractmethod
-    async def get_by_username(self, username: str) -> Optional[dict]:
-        """Retrieve a user by username."""
-        pass
-
-    @abstractmethod
     async def get_by_email(self, email: str) -> Optional[dict]:
         """Retrieve a user by email."""
         pass
@@ -21,26 +16,26 @@ class IUserRepository(ABC):
         pass
 
     @abstractmethod
-    async def increment_failed_attempts(self, username: str) -> None:
+    async def increment_failed_attempts(self, email: str) -> None:
         """Increment failed login attempts for a user."""
         pass
 
     @abstractmethod
-    async def reset_failed_attempts(self, username: str) -> None:
+    async def reset_failed_attempts(self, email: str) -> None:
         """Reset failed login attempts for a user."""
         pass
 
     @abstractmethod
-    async def update_account_status(self, username: str, status: AccountStatus | str) -> None:
+    async def update_account_status(self, email: str, status: AccountStatus | str) -> None:
         """Update account status for a user.
         
         Args:
-            username: The username of the user
+            email: The email of the user
             status: AccountStatus enum or string value
         """
         pass
 
     @abstractmethod
-    async def update_password(self, username: str, hashed_password: str) -> None:
+    async def update_password(self, email: str, hashed_password: str) -> None:
         """Update user's hashed password."""
         pass

@@ -11,16 +11,14 @@ class AccountStatus(StrEnum):
 class AuthErrorDetails(StrEnum):
     """Authentication and authorization related error messages."""
     
-    USER_ALREADY_EXISTS = "User already exists"
-    USERNAME_TOO_SHORT = "Username must be at least 5 characters long"
     PASSWORD_TOO_SHORT = "Password must be at least 8 characters long"
     PASSWORD_MISSING_UPPERCASE = "Password must contain at least one uppercase letter"
     PASSWORD_MISSING_LOWERCASE = "Password must contain at least one lowercase letter"
     PASSWORD_MISSING_NUMBER = "Password must contain at least one number"
     PASSWORD_MISSING_SPECIAL = "Password must contain at least one special character"
     
-    USER_NOT_FOUND = "User not found"
-    INVALID_PASSWORD = "Invalid password"
+    USER_NOT_FOUND = "Invalid email or password"
+    INVALID_PASSWORD = "Invalid email or password"
     ACCOUNT_LOCKED = "Account has been locked due to multiple failed login attempts"
     ACCOUNT_DISABLED = "Account has been disabled"
     

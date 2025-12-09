@@ -3,70 +3,28 @@ import re
 from app.core.constants import AuthErrorDetails
 
 
-class UserCreateRequest(BaseModel):
+class UserLoginRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    username: str
     email: str
     password: str
-    name: str
-
-    @field_validator('name')
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        v = v.strip()
-        if len(v) < 2:
-            raise ValueError("Name must be at least 2 characters long")
-        return v
-
-    @field_validator('username')
-    @classmethod
-    def validate_username(cls, v: str) -> str:
-        if len(v) < 5:
-            raise ValueError(AuthErrorDetails.USERNAME_TOO_SHORT)
-        return v
-
+    
     @field_validator('email')
     @classmethod
     def validate_email(cls, v: str) -> str:
         v = v.strip().lower()
-        # Basic email validation
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(email_pattern, v):
-            raise ValueError("Invalid email format")
         return v
-
-    @field_validator('password')
-    @classmethod
-    def validate_password(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError(AuthErrorDetails.PASSWORD_TOO_SHORT)
-        if not re.search(r'[A-Z]', v):
-            raise ValueError(AuthErrorDetails.PASSWORD_MISSING_UPPERCASE)
-        if not re.search(r'[a-z]', v):
-            raise ValueError(AuthErrorDetails.PASSWORD_MISSING_LOWERCASE)
-        if not re.search(r'[0-9]', v):
-            raise ValueError(AuthErrorDetails.PASSWORD_MISSING_NUMBER)
-        if not re.search(r'[^a-zA-Z0-9]', v):
-            raise ValueError(AuthErrorDetails.PASSWORD_MISSING_SPECIAL)
-        return v
-
-
-class UserLoginRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    username: str
-    password: str
 
 
 class UserData(BaseModel):
     model_config = ConfigDict(extra='ignore')
-    username: str
+    email: str
     name: str | None = None
     account_status: str | None = None
 
 
 class TokenResponse(BaseModel):
     model_config = ConfigDict(extra='ignore')
-    username: str
+    email: str
     name: str | None = None
     access_token: str
     refresh_token: str
@@ -77,7 +35,6 @@ class RegistrationInitiateRequest(BaseModel):
     """Request schema for initiating registration (step 1)."""
     model_config = ConfigDict(extra='forbid')
     name: str
-    username: str
     email: str
     password: str
 
@@ -87,13 +44,6 @@ class RegistrationInitiateRequest(BaseModel):
         v = v.strip()
         if len(v) < 2:
             raise ValueError("Name must be at least 2 characters long")
-        return v
-
-    @field_validator('username')
-    @classmethod
-    def validate_username(cls, v: str) -> str:
-        if len(v) < 5:
-            raise ValueError(AuthErrorDetails.USERNAME_TOO_SHORT)
         return v
 
     @field_validator('email')
@@ -128,9 +78,8 @@ class RegistrationInitiateResponse(BaseModel):
 
 
 class OTPVerifyRequest(BaseModel):
-    """Request schema for OTP verification (step 2)."""
+    """Request schema for OTP verification (step 2). Token is read from cookie."""
     model_config = ConfigDict(extra='forbid')
-    verification_token: str
     otp: str
 
     @field_validator('otp')

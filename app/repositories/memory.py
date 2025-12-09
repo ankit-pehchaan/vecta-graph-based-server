@@ -6,23 +6,14 @@ from app.core.constants import AccountStatus
 
 class InMemoryUserRepository(IUserRepository):
     def __init__(self):
-        self._users: dict[str, dict] = {}
-        self._users_by_email: dict[str, str] = {}  
-
-    async def get_by_username(self, username: str) -> Optional[dict]:
-        """Retrieve a user by username."""
-        return self._users.get(username)
+        self._users: dict[str, dict] = {}  # email -> user data
 
     async def get_by_email(self, email: str) -> Optional[dict]:
         """Retrieve a user by email."""
-        username = self._users_by_email.get(email.lower())
-        if username:
-            return self._users.get(username)
-        return None
+        return self._users.get(email.lower())
 
     async def save(self, user_data: dict) -> dict:
         """Save user data and return the saved user."""
-        username = user_data["username"]
         email = user_data["email"].lower()
         
         if "account_status" not in user_data:
@@ -37,37 +28,39 @@ class InMemoryUserRepository(IUserRepository):
         if "locked_at" not in user_data:
             user_data["locked_at"] = None
         
-        self._users[username] = user_data
-        self._users_by_email[email] = username
+        self._users[email] = user_data
         
         return user_data
 
-    async def increment_failed_attempts(self, username: str) -> None:
+    async def increment_failed_attempts(self, email: str) -> None:
         """Increment failed login attempts for a user."""
-        if username not in self._users:
+        email = email.lower()
+        if email not in self._users:
             return
-        user = self._users[username]
+        user = self._users[email]
         user["failed_login_attempts"] = user.get("failed_login_attempts", 0) + 1
         user["last_failed_attempt"] = datetime.now(timezone.utc).isoformat()
 
-    async def reset_failed_attempts(self, username: str) -> None:
+    async def reset_failed_attempts(self, email: str) -> None:
         """Reset failed login attempts for a user.
         
         Note: This method ONLY resets the failed attempts counter.
         It does NOT change account_status. Accounts must be explicitly
         unlocked using update_account_status.
         """
-        if username not in self._users:
+        email = email.lower()
+        if email not in self._users:
             return
-        user = self._users[username]
+        user = self._users[email]
         user["failed_login_attempts"] = 0
         user["last_failed_attempt"] = None
 
-    async def update_account_status(self, username: str, status: AccountStatus | str) -> None:
+    async def update_account_status(self, email: str, status: AccountStatus | str) -> None:
         """Update account status for a user."""
-        if username not in self._users:
+        email = email.lower()
+        if email not in self._users:
             return
-        user = self._users[username]
+        user = self._users[email]
         status_value = status.value if isinstance(status, AccountStatus) else status
         user["account_status"] = status_value
         
@@ -76,11 +69,12 @@ class InMemoryUserRepository(IUserRepository):
         elif status_value == AccountStatus.ACTIVE.value:
             user["locked_at"] = None
             
-    async def update_password(self, username: str, hashed_password: str) -> None:
+    async def update_password(self, email: str, hashed_password: str) -> None:
         """Update user's hashed password."""
-        if username not in self._users:
+        email = email.lower()
+        if email not in self._users:
             return
-        self._users[username]["hashed_password"] = hashed_password
+        self._users[email]["hashed_password"] = hashed_password
 
 
 from app.interfaces.verification import IVerificationRepository
