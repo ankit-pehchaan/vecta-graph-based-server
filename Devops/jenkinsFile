@@ -51,7 +51,7 @@ pipeline {
                 script {
                     withCredentials([[
                         $class: 'AmazonWebServicesCredentialsBinding',
-                        credentialsId: 'aws_key'
+                        credentialsId: 'aws'
                     ]]) {
                         sh '''
                             aws sts get-caller-identity
@@ -70,7 +70,7 @@ pipeline {
                 script {
                     withCredentials([[
                         $class: 'AmazonWebServicesCredentialsBinding',
-                        credentialsId: 'aws_key'
+                        credentialsId: 'aws'
                     ]]) {
                         sh '''
                             set -e
