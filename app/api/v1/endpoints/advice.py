@@ -14,24 +14,22 @@ from app.core.database import db_manager
 
 router = APIRouter()
 
+# Initialize repositories (singleton pattern)
+_user_repository = UserRepository()
+_profile_repository = FinancialProfileRepository()
 
-def _get_advice_service(db_session) -> AdviceService:
-    """Create AdviceService with database repositories."""
-    user_repository = UserRepository(db_session)
-    profile_repository = FinancialProfileRepository(db_session)
-
-    agent_service = AgnoAgentService(
-        user_repository=user_repository,
-        profile_repository=profile_repository
-    )
-    profile_extractor = ProfileExtractor(profile_repository=profile_repository)
-    intelligence_service = IntelligenceService()
-
-    return AdviceService(
-        agent_service=agent_service,
-        profile_extractor=profile_extractor,
-        intelligence_service=intelligence_service
-    )
+# Initialize services
+_agent_service = AgnoAgentService(
+    user_repository=_user_repository,
+    profile_repository=_profile_repository
+)
+_profile_extractor = ProfileExtractor(profile_repository=_profile_repository)
+_intelligence_service = IntelligenceService()
+_advice_service = AdviceService(
+    agent_service=_agent_service,
+    profile_extractor=_profile_extractor,
+    intelligence_service=_intelligence_service
+)
 
 
 @router.websocket("/ws")

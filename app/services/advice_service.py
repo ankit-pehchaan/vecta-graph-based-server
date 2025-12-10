@@ -2,7 +2,8 @@ import json
 import asyncio
 from typing import AsyncGenerator, Optional
 from datetime import datetime, timezone
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from app.services.agno_agent_service import AgnoAgentService
 from app.services.profile_extractor import ProfileExtractor
 from app.services.intelligence_service import IntelligenceService
@@ -12,8 +13,7 @@ from app.schemas.advice import (
     ProfileUpdate,
     Greeting,
     ErrorMessage,
-    IntelligenceSummary,
-    SuggestedNextSteps
+    IntelligenceSummary
 )
 from app.schemas.financial import FinancialProfile
 
@@ -41,28 +41,31 @@ class AdviceService:
         """
         try:
             # Check connection state before sending
-            # Use getattr to safely check state attributes
-            try:
-                client_state = getattr(websocket, 'client_state', None)
-                app_state = getattr(websocket, 'application_state', None)
-                
-                if client_state and hasattr(client_state, 'name'):
-                    if client_state.name != "CONNECTED":
-                        return False
-                if app_state and hasattr(app_state, 'name'):
-                    if app_state.name != "CONNECTED":
-                        return False
-            except (AttributeError, RuntimeError):
-                # If we can't check state, try to send anyway
-                # The send will fail gracefully if connection is closed
-                pass
+            if not self._is_websocket_connected(websocket):
+                print(f"[WS] Cannot send - not connected")
+                return False
             
             await websocket.send_json(message)
+            print(f"[WS] Sent message type: {message.get('type')}")
             return True
-        except Exception as e:
-            # Most WebSocket send errors are due to disconnections, which are normal
-            # Don't log these errors as they're expected when clients disconnect
-            # If there's a real programming error, it will surface in other ways
+        except (WebSocketDisconnect, RuntimeError, Exception) as e:
+            # WebSocket disconnected or closed - this is normal
+            print(f"[WS] Send failed: {e}")
+            return False
+    
+    def _is_websocket_connected(self, websocket: WebSocket) -> bool:
+        """Safely check if WebSocket is connected."""
+        try:
+            # Check client state
+            if hasattr(websocket, 'client_state'):
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    return False
+            # Check application state
+            if hasattr(websocket, 'application_state'):
+                if websocket.application_state != WebSocketState.CONNECTED:
+                    return False
+            return True
+        except Exception:
             return False
     
     async def send_greeting(self, websocket: WebSocket, username: str) -> None:
@@ -156,66 +159,6 @@ class AdviceService:
             traceback.print_exc()
             yield f"Error: {str(e)}"
     
-    async def _generate_intelligence_updates(
-        self,
-        username: str,
-        conversation_context: str,
-        profile_data: Optional[dict] = None
-    ) -> tuple[Optional[IntelligenceSummary], Optional[SuggestedNextSteps]]:
-        """
-        Generate intelligence summary and next steps concurrently.
-        
-        Returns:
-            Tuple of (IntelligenceSummary, SuggestedNextSteps) or (None, None) on error
-        """
-        try:
-            # Run both agents concurrently
-            intelligence_task = asyncio.create_task(
-                self.intelligence_service.generate_intelligence_summary(
-                    username,
-                    conversation_context,
-                    profile_data
-                )
-            )
-            next_steps_task = asyncio.create_task(
-                self.intelligence_service.generate_suggested_next_steps(
-                    username,
-                    conversation_context,
-                    profile_data
-                )
-            )
-            
-            # Wait for both to complete
-            intelligence_result, next_steps_result = await asyncio.gather(
-                intelligence_task,
-                next_steps_task,
-                return_exceptions=True
-            )
-            
-            # Handle results
-            intelligence_summary = None
-            suggested_steps = None
-            
-            if not isinstance(intelligence_result, Exception):
-                intelligence_summary = IntelligenceSummary(
-                    summary=intelligence_result.summary,
-                    insights=intelligence_result.insights,
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                )
-            
-            if not isinstance(next_steps_result, Exception):
-                suggested_steps = SuggestedNextSteps(
-                    steps=next_steps_result.steps,
-                    priority=next_steps_result.priority,
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                )
-            
-            return intelligence_summary, suggested_steps
-        
-        except Exception as e:
-            print(f"Error generating intelligence updates: {e}")
-            return None, None
-    
     async def process_user_message(
         self,
         websocket: WebSocket,
@@ -235,15 +178,13 @@ class AdviceService:
             
             self._conversation_contexts[username] += f"\nUser: {user_message}\n"
             
-            # Get agent for user
+            # Get agent for user (this should be quick - cached)
             agent = await self.agent_service.get_agent(username)
             
             # Stream agent response
-            accumulated_text = ""
             full_response = ""
             
             async for chunk in self._stream_agent_response(agent, user_message):
-                accumulated_text += chunk
                 full_response += chunk
                 
                 # Send agent response chunk immediately
@@ -255,26 +196,60 @@ class AdviceService:
                 yield agent_response.model_dump()
             
             # Mark final chunk as complete
-            if full_response:
-                final_response = AgentResponse(
-                    content="",
-                    is_complete=True,
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                )
-                yield final_response.model_dump()
+            final_response = AgentResponse(
+                content="",
+                is_complete=True,
+                timestamp=datetime.now(timezone.utc).isoformat()
+            )
+            yield final_response.model_dump()
             
             # Update conversation context with agent response
             self._conversation_contexts[username] += f"Agent: {full_response}\n"
             
-            # Extract profile updates (non-blocking)
-            profile_data = None
-            try:
-                update_result = await self.profile_extractor.extract_and_update_profile(
-                    username,
-                    full_response
-                )
-                
-                if update_result:
+            # Run profile extraction in background - don't block the main response flow
+            # Combine user message and agent response for extraction
+            combined_text = f"User: {user_message}\nAgent: {full_response}"
+            asyncio.create_task(
+                self._extract_and_send_profile_update(websocket, username, combined_text)
+            )
+            
+            # Stream intelligence updates in background
+            asyncio.create_task(
+                self._stream_intelligence_updates(websocket, username)
+            )
+        
+        except Exception as e:
+            print(f"Error processing message: {e}")
+            import traceback
+            traceback.print_exc()
+            error_msg = f"Error processing message: {str(e)}"
+            yield ErrorMessage(
+                message=error_msg,
+                code="PROCESSING_ERROR",
+                timestamp=datetime.now(timezone.utc).isoformat()
+            ).model_dump()
+    
+    async def _extract_and_send_profile_update(
+        self,
+        websocket: WebSocket,
+        username: str,
+        conversation_text: str
+    ) -> None:
+        """Extract profile updates and send them via WebSocket (background task)."""
+        try:
+            if not self._is_websocket_connected(websocket):
+                print(f"[Profile] WebSocket not connected for {username}, skipping extraction")
+                return
+            
+            print(f"[Profile] Starting extraction for {username}")
+            update_result = await self.profile_extractor.extract_and_update_profile(
+                username,
+                conversation_text
+            )
+            
+            if update_result:
+                print(f"[Profile] Extraction result: changes={update_result.get('changes')}")
+                if self._is_websocket_connected(websocket):
                     profile_data = update_result["profile"]
                     profile = FinancialProfile(**profile_data)
                     
@@ -283,31 +258,25 @@ class AdviceService:
                         changes=update_result.get("changes"),
                         timestamp=datetime.now(timezone.utc).isoformat()
                     )
-                    yield profile_update.model_dump()
-            except Exception as e:
-                print(f"Profile extraction error: {e}")
-            
-            # Generate intelligence updates concurrently (non-blocking, don't wait)
-            # Run in background and send when ready
-            asyncio.create_task(
-                self._send_intelligence_updates(websocket, username, profile_data)
-            )
-        
+                    print(f"[Profile] Sending profile update to {username}")
+                    # Use mode='json' to properly serialize datetime objects
+                    message_dict = profile_update.model_dump(mode='json')
+                    print(f"[Profile] Message type: {message_dict.get('type')}, goals count: {len(message_dict.get('profile', {}).get('goals', []))}")
+                    success = await self.send_message(websocket, message_dict)
+                    print(f"[Profile] Send result: {success}")
+            else:
+                print(f"[Profile] No extraction result for {username}")
         except Exception as e:
-            error_msg = f"Error processing message: {str(e)}"
-            yield ErrorMessage(
-                message=error_msg,
-                code="PROCESSING_ERROR",
-                timestamp=datetime.now(timezone.utc).isoformat()
-            ).model_dump()
+            print(f"Profile extraction error (background): {e}")
+            import traceback
+            traceback.print_exc()
     
-    async def _send_intelligence_updates(
+    async def _stream_intelligence_updates(
         self,
         websocket: WebSocket,
-        username: str,
-        profile_data: Optional[dict] = None
+        username: str
     ) -> None:
-        """Generate and send intelligence updates in background."""
+        """Stream intelligence updates in background."""
         try:
             conversation_context = self._conversation_contexts.get(username, "")
             
@@ -315,30 +284,44 @@ class AdviceService:
             recent_context = conversation_context[-2000:] if len(conversation_context) > 2000 else conversation_context
             
             # Check connection before expensive generation
-            if websocket.client_state.name != "CONNECTED":
+            if not self._is_websocket_connected(websocket):
                 return
 
-            intelligence_summary, suggested_steps = await self._generate_intelligence_updates(
+            # Get profile data from repository
+            profile_data = None
+            try:
+                profile_data = await self.profile_extractor.profile_repository.get_by_username(username)
+            except Exception:
+                pass
+
+            # Stream intelligence summary
+            async for chunk in self.intelligence_service.stream_intelligence_summary(
                 username,
                 recent_context,
                 profile_data
-            )
-            
-            # Check connection again before sending
-            if websocket.client_state.name != "CONNECTED":
-                return
-            
-            # Send intelligence summary if available
-            if intelligence_summary:
-                if not await self.send_message(websocket, intelligence_summary.model_dump()):
+            ):
+                if not self._is_websocket_connected(websocket):
+                    return
+                
+                intelligence_msg = IntelligenceSummary(
+                    content=chunk,
+                    is_complete=False,
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+                if not await self.send_message(websocket, intelligence_msg.model_dump()):
                     return
             
-            # Send suggested next steps if available
-            if suggested_steps:
-                await self.send_message(websocket, suggested_steps.model_dump())
+            # Send final complete message
+            if self._is_websocket_connected(websocket):
+                final_msg = IntelligenceSummary(
+                    content="",
+                    is_complete=True,
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+                await self.send_message(websocket, final_msg.model_dump())
         
         except Exception as e:
-            print(f"Error sending intelligence updates: {e}")
+            print(f"Error streaming intelligence updates: {e}")
     
     async def handle_websocket_connection(self, websocket: WebSocket, username: str) -> None:
         """
@@ -353,10 +336,19 @@ class AdviceService:
             await self.send_greeting(websocket, username)
             
             # Main message loop
-            while True:
+            while self._is_websocket_connected(websocket):
                 try:
-                    # Receive message from client
-                    data = await websocket.receive_text()
+                    # Receive message from client with proper exception handling
+                    try:
+                        data = await websocket.receive_text()
+                    except WebSocketDisconnect:
+                        # Client disconnected normally
+                        break
+                    except RuntimeError as e:
+                        # Connection closed
+                        if "disconnect" in str(e).lower() or "closed" in str(e).lower():
+                            break
+                        raise
                     
                     # Parse user message
                     try:
@@ -375,28 +367,42 @@ class AdviceService:
                             user_text
                         ):
                             # Check connection before sending each chunk
-                            if websocket.client_state.name != "CONNECTED":
+                            if not self._is_websocket_connected(websocket):
                                 break
                             
                             if not await self.send_message(websocket, response_chunk):
                                 break
+                    except WebSocketDisconnect:
+                        break
                     except Exception as stream_error:
-                        # If streaming fails, send error and continue
-                        error_msg = f"Error processing message: {str(stream_error)}"
-                        await self.send_error(websocket, error_msg, "STREAMING_ERROR")
-                        # Continue listening for more messages instead of breaking
+                        # If streaming fails, try to send error and continue
+                        if self._is_websocket_connected(websocket):
+                            error_msg = f"Error processing message: {str(stream_error)}"
+                            await self.send_error(websocket, error_msg, "STREAMING_ERROR")
                 
+                except WebSocketDisconnect:
+                    # Client disconnected
+                    break
                 except Exception as e:
-                    error_msg = f"Error handling message: {str(e)}"
-                    await self.send_error(websocket, error_msg)
-                    # Continue listening for more messages
+                    # Try to send error if still connected
+                    if self._is_websocket_connected(websocket):
+                        error_msg = f"Error handling message: {str(e)}"
+                        await self.send_error(websocket, error_msg)
+                    else:
+                        break
         
+        except WebSocketDisconnect:
+            # Client disconnected - normal exit
+            pass
         except Exception as e:
-            error_msg = f"WebSocket connection error: {str(e)}"
-            await self.send_error(websocket, error_msg)
+            # Try to send error if still connected
+            if self._is_websocket_connected(websocket):
+                error_msg = f"WebSocket connection error: {str(e)}"
+                await self.send_error(websocket, error_msg)
         finally:
+            # Clean up - close if not already closed
             try:
-                await websocket.close()
+                if self._is_websocket_connected(websocket):
+                    await websocket.close()
             except Exception:
                 pass
-
