@@ -5,7 +5,8 @@ from app.schemas.user import (
     TokenResponse,
     RegistrationInitiateRequest,
     RegistrationInitiateResponse,
-    OTPVerifyRequest
+    OTPVerifyRequest,
+    ResendOTPResponse
 )
 from app.schemas.response import ApiResponse
 from app.services.auth import AuthService
@@ -53,7 +54,7 @@ async def register_initiate(
         httponly=settings.COOKIE_HTTP_ONLY,
         secure=settings.COOKIE_SECURE,
         samesite=settings.COOKIE_SAME_SITE,
-        max_age=settings.OTP_EXPIRY_MINUTES * 60
+        max_age=settings.VERIFICATION_TOKEN_EXPIRY_MINUTES * 60
     )
     
     return ApiResponse(
@@ -115,6 +116,32 @@ async def register_verify(
             access_token=result["access_token"],
             refresh_token=result["refresh_token"]
         )
+    )
+
+
+@router.post("/register/resend-otp", response_model=ApiResponse, status_code=status.HTTP_200_OK)
+async def resend_otp(
+    response: Response,
+    verification_token: str = Cookie(...),
+    auth_service: AuthService = Depends(get_auth_service)
+):
+    """Resend OTP for pending verification. Token is read from cookie."""
+    result = await auth_service.resend_otp(verification_token=verification_token)
+    
+    # Refresh the cookie expiry time (reset to 9 minutes)
+    response.set_cookie(
+        key="verification_token",
+        value=verification_token,
+        httponly=settings.COOKIE_HTTP_ONLY,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAME_SITE,
+        max_age=settings.VERIFICATION_TOKEN_EXPIRY_MINUTES * 60
+    )
+    
+    return ApiResponse(
+        success=True,
+        message=result["message"],
+        data=ResendOTPResponse(message=result["message"])
     )
 
 

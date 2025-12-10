@@ -34,10 +34,11 @@ class AuthErrorDetails(StrEnum):
     # OTP Verification Errors
     EMAIL_ALREADY_EXISTS = "Email already registered"
     VERIFICATION_IN_PROGRESS = "Verification already in progress. Please check your email"
-    VERIFICATION_TOKEN_INVALID = "Invalid verification token"
+    VERIFICATION_TOKEN_INVALID = "Invalid verification token. Try registering again"
     OTP_EXPIRED = "OTP expired. Please register again"
     OTP_INVALID = "Invalid OTP"
     OTP_ATTEMPTS_EXCEEDED = "Too many failed attempts"
+    OTP_RESEND_FAILED = "Failed to resend OTP. Please try again"
     RATE_LIMIT_EXCEEDED_OTP_VERIFY = "Too many OTP verification attempts. Please try again later"
 
 

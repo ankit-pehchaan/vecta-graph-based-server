@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     OTP_EXPIRY_MINUTES: int = Field(default=3, description="OTP expiration time in minutes")
     MAX_OTP_ATTEMPTS: int = Field(default=5, description="Maximum OTP verification attempts")
     FIXED_OTP: str | None = Field(default="", description="Fixed OTP for testing (leave empty for random OTP in production)")
+    VERIFICATION_TOKEN_EXPIRY_MINUTES: int = Field(default=9, description="Verification token cookie expiration time in minutes")
     
     # Email Configuration (SMTP)
     SMTP_HOST: str = Field(default="smtp.gmail.com", description="SMTP server host")

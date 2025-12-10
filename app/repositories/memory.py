@@ -125,3 +125,25 @@ class InMemoryVerificationRepository(IVerificationRepository):
         """Increment failed verification attempts."""
         if token in self._by_token:
             self._by_token[token]["attempts"] = self._by_token[token].get("attempts", 0) + 1
+
+    async def update_otp(self, token: str, new_otp: str) -> bool:
+        """Update OTP for existing verification and reset expiry/attempts.
+        
+        Args:
+            token: Verification token
+            new_otp: New OTP code to set
+            
+        Returns:
+            True if updated successfully, False if token not found
+        """
+        if token not in self._by_token:
+            return False
+        
+        from datetime import datetime, timezone
+        
+        # Update OTP, reset timestamp and attempts
+        self._by_token[token]["otp"] = new_otp
+        self._by_token[token]["created_at"] = datetime.now(timezone.utc).isoformat()
+        self._by_token[token]["attempts"] = 0
+        
+        return True
