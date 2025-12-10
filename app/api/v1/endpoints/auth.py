@@ -1,12 +1,13 @@
 from datetime import timedelta
-from fastapi import APIRouter, Response, status, Depends, Cookie
+from fastapi import APIRouter, Response, status, Depends, Cookie, Request
 from app.schemas.user import (
     UserLoginRequest,
     TokenResponse,
     RegistrationInitiateRequest,
     RegistrationInitiateResponse,
     OTPVerifyRequest,
-    ResendOTPResponse
+    ResendOTPResponse,
+    UserData
 )
 from app.schemas.response import ApiResponse
 from app.services.auth import AuthService
@@ -18,7 +19,9 @@ from app.core.dependencies import (
     check_otp_verify_rate_limit
 )
 from app.core.handler import AppException
-from app.core.constants import AuthErrorDetails
+from app.core.constants import AuthErrorDetails, GeneralErrorDetails
+from app.core.security import decode_token
+from jose import JWTError
 
 router = APIRouter()
 
@@ -32,6 +35,45 @@ async def get_auth_service() -> AuthService:
         user_repository=_user_repository,
         verification_repository=_verification_repository
     )
+
+
+async def get_current_user(access_token: str = Cookie(None)) -> dict:
+    """
+    Dependency to get current authenticated user from access_token cookie.
+    
+    Raises:
+        AppException: If token is missing, invalid, or expired
+    """
+    if not access_token:
+        raise AppException(
+            message=GeneralErrorDetails.UNAUTHORIZED,
+            status_code=401
+        )
+    
+    try:
+        payload = decode_token(access_token, token_type="access")
+        email: str = payload.get("sub")
+        
+        if email is None:
+            raise AppException(
+                message=AuthErrorDetails.TOKEN_INVALID,
+                status_code=401
+            )
+        
+        user = await _user_repository.get_by_email(email)
+        if not user:
+            raise AppException(
+                message=AuthErrorDetails.USER_NOT_FOUND,
+                status_code=401
+            )
+        
+        return user
+        
+    except JWTError:
+        raise AppException(
+            message=AuthErrorDetails.TOKEN_INVALID,
+            status_code=401
+        )
 
 
 @router.post("/register/initiate", response_model=ApiResponse, status_code=status.HTTP_200_OK)
@@ -210,4 +252,18 @@ async def logout(response: Response):
         success=True,
         message="Logged out successfully",
         data={}
+    )
+
+
+@router.get("/me", response_model=ApiResponse, status_code=status.HTTP_200_OK)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get current authenticated user information."""
+    return ApiResponse(
+        success=True,
+        message="User retrieved successfully",
+        data=UserData(
+            email=current_user["email"],
+            name=current_user.get("name"),
+            account_status=current_user.get("account_status")
+        )
     )
