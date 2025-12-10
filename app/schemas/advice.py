@@ -53,22 +53,14 @@ class ErrorMessage(BaseModel):
 
 
 class IntelligenceSummary(BaseModel):
-    """AI-generated intelligence summary."""
+    """AI-generated intelligence summary (streaming)."""
     model_config = ConfigDict(extra='ignore')
     
     type: Literal["intelligence_summary"] = "intelligence_summary"
-    summary: str
+    content: str  # Chunk of content when streaming
+    is_complete: bool = False  # True when this is the final chunk
+    summary: Optional[str] = None  # Full summary (for non-streaming/final)
     insights: list[str] = []
-    timestamp: Optional[str] = None
-
-
-class SuggestedNextSteps(BaseModel):
-    """AI-generated suggested next steps."""
-    model_config = ConfigDict(extra='ignore')
-    
-    type: Literal["suggested_next_steps"] = "suggested_next_steps"
-    steps: list[str] = []
-    priority: Optional[str] = None  # High, Medium, Low
     timestamp: Optional[str] = None
 
 
