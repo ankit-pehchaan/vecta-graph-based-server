@@ -91,3 +91,9 @@ class OTPVerifyRequest(BaseModel):
         if not v.isdigit():
             raise ValueError("OTP must contain only digits")
         return v
+
+
+class ResendOTPResponse(BaseModel):
+    """Response schema for OTP resend."""
+    model_config = ConfigDict(extra='ignore')
+    message: str

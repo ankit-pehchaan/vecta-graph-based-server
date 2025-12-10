@@ -101,7 +101,7 @@ class AuthService:
         Raises:
             AppException: If email exists or verification in progress
         """
-        # 1. Check if email already exists
+        # 1. Check if email already exists in user repository
         existing_email = await self.user_repository.get_by_email(email)
         if existing_email:
             raise AppException(
@@ -110,16 +110,15 @@ class AuthService:
                 data={"email": email}
             )
         
-        # 2. Check for pending verification
+        # 2. Check for pending verification in verification repository
         pending = await self.verification_repository.get_by_email(email)
         if pending:
-            # Check if expired
-            if not self._is_expired(pending['created_at'], settings.OTP_EXPIRY_MINUTES):
+            # Check if expired (after 15 minutes we delete the verification token)
+            if not self._is_expired(pending['created_at'], settings.VERIFICATION_TOKEN_EXPIRY_MINUTES):
                 raise AppException(
                     message=AuthErrorDetails.VERIFICATION_IN_PROGRESS,
                     status_code=429
                 )
-            # Expired - delete old verification
             await self.verification_repository.delete_by_email(email)
         
         # 3. Generate verification token and OTP
@@ -281,3 +280,52 @@ class AuthService:
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"]
         }
+
+    async def resend_otp(self, verification_token: str) -> dict[str, str]:
+        """Resend OTP for pending verification.
+        
+        Args:
+            verification_token: UUID verification token from cookie
+            
+        Returns:
+            Dictionary with success message
+            
+        Raises:
+            AppException: If token invalid or expired
+        """
+        # 1. Lookup pending verification
+        pending = await self.verification_repository.get_by_token(verification_token)
+        if not pending:
+            raise AppException(
+                message=AuthErrorDetails.VERIFICATION_TOKEN_INVALID,
+                status_code=404
+            )
+        
+        # 2. Check if verification session expired (> 9 minutes) - must re-register
+        if self._is_expired(pending['created_at'], settings.VERIFICATION_TOKEN_EXPIRY_MINUTES):
+            await self.verification_repository.delete_by_token(verification_token)
+            raise AppException(
+                message=AuthErrorDetails.OTP_EXPIRED,
+                status_code=410
+            )
+        
+        # 3. Generate new OTP
+        new_otp = self._generate_otp()
+        
+        # 4. Update verification record (new OTP, reset timestamp & attempts)
+        updated = await self.verification_repository.update_otp(verification_token, new_otp)
+        if not updated:
+            raise AppException(
+                message=AuthErrorDetails.OTP_RESEND_FAILED,
+                status_code=500
+            )
+        
+        # 5. Send new OTP email
+        email_sent = await send_otp_email(pending['email'], new_otp)
+        if not email_sent:
+            raise AppException(
+                message=AuthErrorDetails.OTP_RESEND_FAILED,
+                status_code=500
+            )
+        
+        return {"message": "OTP resent successfully"}
