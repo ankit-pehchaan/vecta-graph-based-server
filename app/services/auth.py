@@ -1,5 +1,9 @@
 from typing import Optional
+from datetime import datetime, timezone
+import uuid
+import secrets
 from app.interfaces.user import IUserRepository
+from app.interfaces.verification import IVerificationRepository
 from app.core.security import (
     get_password_hash,
     create_access_token,
@@ -9,15 +13,21 @@ from app.core.security import (
 from app.core.handler import AppException
 from app.core.constants import AuthErrorDetails, AccountStatus
 from app.core.config import settings
+from app.services.email import send_otp_email
 
 
 class AuthService:
-    def __init__(self, user_repository: IUserRepository):
+    def __init__(
+        self,
+        user_repository: IUserRepository,
+        verification_repository: IVerificationRepository
+    ):
         self.user_repository = user_repository
+        self.verification_repository = verification_repository
 
-    def _generate_tokens(self, username: str) -> dict[str, str]:
+    def _generate_tokens(self, email: str) -> dict[str, str]:
         """Generate access and refresh tokens for a user."""
-        token_data = {"sub": username}
+        token_data = {"sub": email}
         return {
             "access_token": create_access_token(token_data),
             "refresh_token": create_refresh_token(token_data)
@@ -41,40 +51,170 @@ class AuthService:
         # Default to ACTIVE for invalid status values
         return AccountStatus.ACTIVE.value
 
-    async def register_user(self, username: str, password: str, name: str) -> dict[str, str | dict]:
-        """Register a new user with hashed password and return tokens."""
-        existing_user = await self.user_repository.get_by_username(username)
-        if existing_user:
+    def _is_expired(self, created_at: str, expiry_minutes: int) -> bool:
+        """Check if a timestamp has expired.
+        
+        Args:
+            created_at: ISO format timestamp string
+            expiry_minutes: Expiration time in minutes
+            
+        Returns:
+            True if expired, False otherwise
+        """
+        created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        elapsed = (now - created).total_seconds() / 60
+        return elapsed > expiry_minutes
+
+    def _generate_otp(self) -> str:
+        """Generate a random 6-digit OTP.
+        
+        In development (FIXED_OTP set), returns the fixed OTP for testing.
+        In production, generates a cryptographically secure random 6-digit number.
+        
+        Returns:
+            6-digit OTP as string
+        """
+        # Use fixed OTP if configured (for testing)
+        if settings.FIXED_OTP and settings.FIXED_OTP != "":
+            return settings.FIXED_OTP
+        
+        # Generate random 6-digit OTP (100000 to 999999)
+        return str(secrets.randbelow(900000) + 100000)
+
+    async def initiate_registration(
+        self,
+        name: str,
+        email: str,
+        password: str
+    ) -> dict[str, str]:
+        """Initiate registration by creating pending verification and sending OTP.
+        
+        Args:
+            name: User's full name
+            email: User's email address
+            password: User's password (will be hashed)
+            
+        Returns:
+            Dictionary with verification_token
+            
+        Raises:
+            AppException: If email exists or verification in progress
+        """
+        # 1. Check if email already exists in user repository
+        existing_email = await self.user_repository.get_by_email(email)
+        if existing_email:
             raise AppException(
-                message=AuthErrorDetails.USER_ALREADY_EXISTS,
+                message=AuthErrorDetails.EMAIL_ALREADY_EXISTS,
                 status_code=409,
-                data={"username": username}
+                data={"email": email}
             )
-
+        
+        # 2. Check for pending verification in verification repository
+        pending = await self.verification_repository.get_by_email(email)
+        if pending:
+            # Check if expired (after 15 minutes we delete the verification token)
+            if not self._is_expired(pending['created_at'], settings.VERIFICATION_TOKEN_EXPIRY_MINUTES):
+                raise AppException(
+                    message=AuthErrorDetails.VERIFICATION_IN_PROGRESS,
+                    status_code=429
+                )
+            await self.verification_repository.delete_by_email(email)
+        
+        # 3. Generate verification token and OTP
+        verification_token = str(uuid.uuid4())
+        otp = self._generate_otp()
         hashed_password = get_password_hash(password)
-
-        user_data = {
-            "username": username,
+        
+        # 4. Store pending verification
+        verification_data = {
+            "email": email,
             "name": name,
             "hashed_password": hashed_password,
+            "otp": otp,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "attempts": 0
+        }
+        await self.verification_repository.save(verification_token, email, verification_data)
+        
+        # 5. Send OTP email
+        await send_otp_email(email, otp)
+        
+        return {"verification_token": verification_token}
+
+    async def verify_otp(self, verification_token: str, otp: str) -> dict[str, str]:
+        """Verify OTP and create user account.
+        
+        Args:
+            verification_token: UUID verification token
+            otp: One-time password to verify
+            
+        Returns:
+            Dictionary with email, name, access_token and refresh_token
+            
+        Raises:
+            AppException: If token invalid, OTP expired, too many attempts, or OTP invalid
+        """
+        # 1. Lookup pending verification
+        pending = await self.verification_repository.get_by_token(verification_token)
+        if not pending:
+            raise AppException(
+                message=AuthErrorDetails.VERIFICATION_TOKEN_INVALID,
+                status_code=404
+            )
+        
+        # 2. Check if expired (> 3 minutes)
+        if self._is_expired(pending['created_at'], settings.OTP_EXPIRY_MINUTES):
+            await self.verification_repository.delete_by_token(verification_token)
+            raise AppException(
+                message=AuthErrorDetails.OTP_EXPIRED,
+                status_code=410
+            )
+        
+        # 3. Check max attempts (>= 5)
+        if pending['attempts'] >= settings.MAX_OTP_ATTEMPTS:
+            await self.verification_repository.delete_by_token(verification_token)
+            raise AppException(
+                message=AuthErrorDetails.OTP_ATTEMPTS_EXCEEDED,
+                status_code=429
+            )
+        
+        # 4. Validate OTP
+        if pending['otp'] != otp:
+            await self.verification_repository.increment_attempts(verification_token)
+            raise AppException(
+                message=AuthErrorDetails.OTP_INVALID,
+                status_code=401
+            )
+        
+        # 5. OTP valid - create user account
+        user_data = {
+            "name": pending['name'],
+            "email": pending['email'],
+            "hashed_password": pending['hashed_password'],
             "account_status": AccountStatus.ACTIVE,
             "failed_login_attempts": 0,
             "last_failed_attempt": None,
             "locked_at": None
         }
-        saved_user = await self.user_repository.save(user_data)
+        await self.user_repository.save(user_data)
         
-        tokens = self._generate_tokens(username)
+        # 6. Generate tokens
+        tokens = self._generate_tokens(pending['email'])
+        
+        # 7. Delete pending verification
+        await self.verification_repository.delete_by_token(verification_token)
         
         return {
-            "user": saved_user,
+            "email": pending['email'],
+            "name": pending['name'],
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"]
         }
 
-    async def login_user(self, username: str, password: str) -> dict[str, str | dict]:
+    async def login_user(self, email: str, password: str) -> dict[str, str | dict]:
         """Authenticate user and return tokens."""
-        user = await self.user_repository.get_by_username(username)
+        user = await self.user_repository.get_by_email(email)
         if not user:
             raise AppException(
                 message=AuthErrorDetails.USER_NOT_FOUND,
@@ -96,13 +236,13 @@ class AuthService:
             )
 
         if not verify_password(password, user["hashed_password"]):
-            await self.user_repository.increment_failed_attempts(username)
+            await self.user_repository.increment_failed_attempts(email)
             
-            updated_user = await self.user_repository.get_by_username(username)
+            updated_user = await self.user_repository.get_by_email(email)
             if updated_user:
                 failed_attempts = updated_user.get("failed_login_attempts", 0)
                 if failed_attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS:
-                    await self.user_repository.update_account_status(username, AccountStatus.LOCKED)
+                    await self.user_repository.update_account_status(email, AccountStatus.LOCKED)
             
             raise AppException(
                 message=AuthErrorDetails.INVALID_PASSWORD,
@@ -110,7 +250,7 @@ class AuthService:
             )
 
    
-        final_user = await self.user_repository.get_by_username(username)
+        final_user = await self.user_repository.get_by_email(email)
         if not final_user:
             raise AppException(
                 message=AuthErrorDetails.USER_NOT_FOUND,
@@ -131,12 +271,61 @@ class AuthService:
                 status_code=403
             )
 
-        await self.user_repository.reset_failed_attempts(username)
+        await self.user_repository.reset_failed_attempts(email)
 
-        tokens = self._generate_tokens(username)
+        tokens = self._generate_tokens(email)
         
         return {
             "user": user,
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"]
         }
+
+    async def resend_otp(self, verification_token: str) -> dict[str, str]:
+        """Resend OTP for pending verification.
+        
+        Args:
+            verification_token: UUID verification token from cookie
+            
+        Returns:
+            Dictionary with success message
+            
+        Raises:
+            AppException: If token invalid or expired
+        """
+        # 1. Lookup pending verification
+        pending = await self.verification_repository.get_by_token(verification_token)
+        if not pending:
+            raise AppException(
+                message=AuthErrorDetails.VERIFICATION_TOKEN_INVALID,
+                status_code=404
+            )
+        
+        # 2. Check if verification session expired (> 9 minutes) - must re-register
+        if self._is_expired(pending['created_at'], settings.VERIFICATION_TOKEN_EXPIRY_MINUTES):
+            await self.verification_repository.delete_by_token(verification_token)
+            raise AppException(
+                message=AuthErrorDetails.OTP_EXPIRED,
+                status_code=410
+            )
+        
+        # 3. Generate new OTP
+        new_otp = self._generate_otp()
+        
+        # 4. Update verification record (new OTP, reset timestamp & attempts)
+        updated = await self.verification_repository.update_otp(verification_token, new_otp)
+        if not updated:
+            raise AppException(
+                message=AuthErrorDetails.OTP_RESEND_FAILED,
+                status_code=500
+            )
+        
+        # 5. Send new OTP email
+        email_sent = await send_otp_email(pending['email'], new_otp)
+        if not email_sent:
+            raise AppException(
+                message=AuthErrorDetails.OTP_RESEND_FAILED,
+                status_code=500
+            )
+        
+        return {"message": "OTP resent successfully"}
