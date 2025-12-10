@@ -62,8 +62,21 @@ class IVerificationRepository(ABC):
     @abstractmethod
     async def increment_attempts(self, token: str) -> None:
         """Increment failed verification attempts.
-        
+
         Args:
             token: Verification token
+        """
+        pass
+
+    @abstractmethod
+    async def update_otp(self, token: str, new_otp: str) -> bool:
+        """Update OTP and reset attempts for a verification token.
+
+        Args:
+            token: Verification token
+            new_otp: New OTP to set
+
+        Returns:
+            True if updated successfully, False otherwise
         """
         pass

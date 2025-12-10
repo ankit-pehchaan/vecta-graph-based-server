@@ -1,5 +1,6 @@
 from datetime import timedelta
-from fastapi import APIRouter, Response, status, Depends, Cookie, Request
+from fastapi import APIRouter, Response, status, Depends, Cookie
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.user import (
     UserLoginRequest,
     TokenResponse,
@@ -11,8 +12,10 @@ from app.schemas.user import (
 )
 from app.schemas.response import ApiResponse
 from app.services.auth import AuthService
-from app.repositories.memory import InMemoryUserRepository, InMemoryVerificationRepository
+from app.repositories.user_repository import UserRepository
+from app.repositories.verification_repository import VerificationRepository
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.dependencies import (
     check_login_rate_limit,
     check_register_rate_limit,
@@ -25,22 +28,24 @@ from jose import JWTError
 
 router = APIRouter()
 
-_user_repository = InMemoryUserRepository()
-_verification_repository = InMemoryVerificationRepository()
 
-
-async def get_auth_service() -> AuthService:
-    """Dependency injection for AuthService."""
+async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
+    """Dependency injection for AuthService with database repositories."""
+    user_repository = UserRepository(db)
+    verification_repository = VerificationRepository(db)
     return AuthService(
-        user_repository=_user_repository,
-        verification_repository=_verification_repository
+        user_repository=user_repository,
+        verification_repository=verification_repository
     )
 
 
-async def get_current_user(access_token: str = Cookie(None)) -> dict:
+async def get_current_user(
+    access_token: str = Cookie(None),
+    db: AsyncSession = Depends(get_db)
+) -> dict:
     """
     Dependency to get current authenticated user from access_token cookie.
-    
+
     Raises:
         AppException: If token is missing, invalid, or expired
     """
@@ -49,26 +54,27 @@ async def get_current_user(access_token: str = Cookie(None)) -> dict:
             message=GeneralErrorDetails.UNAUTHORIZED,
             status_code=401
         )
-    
+
     try:
         payload = decode_token(access_token, token_type="access")
         email: str = payload.get("sub")
-        
+
         if email is None:
             raise AppException(
                 message=AuthErrorDetails.TOKEN_INVALID,
                 status_code=401
             )
-        
-        user = await _user_repository.get_by_email(email)
+
+        user_repository = UserRepository(db)
+        user = await user_repository.get_by_email(email)
         if not user:
             raise AppException(
                 message=AuthErrorDetails.USER_NOT_FOUND,
                 status_code=401
             )
-        
+
         return user
-        
+
     except JWTError:
         raise AppException(
             message=AuthErrorDetails.TOKEN_INVALID,
@@ -89,7 +95,7 @@ async def register_initiate(
         email=user.email,
         password=user.password
     )
-    
+
     response.set_cookie(
         key="verification_token",
         value=result["verification_token"],
@@ -98,7 +104,7 @@ async def register_initiate(
         samesite=settings.COOKIE_SAME_SITE,
         max_age=settings.VERIFICATION_TOKEN_EXPIRY_MINUTES * 60
     )
-    
+
     return ApiResponse(
         success=True,
         message="OTP sent to your email",
@@ -121,10 +127,10 @@ async def register_verify(
         verification_token=verification_token,
         otp=request.otp
     )
-    
+
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    
+
     response.set_cookie(
         key="access_token",
         value=result["access_token"],
@@ -141,14 +147,14 @@ async def register_verify(
         samesite=settings.COOKIE_SAME_SITE,
         max_age=int(refresh_token_expires.total_seconds())
     )
-    
+
     response.delete_cookie(
         key="verification_token",
         httponly=settings.COOKIE_HTTP_ONLY,
         secure=settings.COOKIE_SECURE,
         samesite=settings.COOKIE_SAME_SITE
     )
-    
+
     return ApiResponse(
         success=True,
         message="Registration successful",
@@ -169,7 +175,7 @@ async def resend_otp(
 ):
     """Resend OTP for pending verification. Token is read from cookie."""
     result = await auth_service.resend_otp(verification_token=verification_token)
-    
+
     # Refresh the cookie expiry time (reset to 9 minutes)
     response.set_cookie(
         key="verification_token",
@@ -179,7 +185,7 @@ async def resend_otp(
         samesite=settings.COOKIE_SAME_SITE,
         max_age=settings.VERIFICATION_TOKEN_EXPIRY_MINUTES * 60
     )
-    
+
     return ApiResponse(
         success=True,
         message=result["message"],
@@ -196,10 +202,10 @@ async def login(
 ):
     """Login user and return JWT tokens."""
     result = await auth_service.login_user(user.email, user.password)
-    
+
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    
+
     response.set_cookie(
         key="access_token",
         value=result["access_token"],
@@ -216,10 +222,10 @@ async def login(
         samesite=settings.COOKIE_SAME_SITE,
         max_age=int(refresh_token_expires.total_seconds())
     )
-    
+
     user_data = result.get("user", {})
     user_name = user_data.get("name") if isinstance(user_data, dict) else None
-    
+
     return ApiResponse(
         success=True,
         message="Login successful",
@@ -247,7 +253,7 @@ async def logout(response: Response):
         secure=settings.COOKIE_SECURE,
         samesite=settings.COOKIE_SAME_SITE
     )
-    
+
     return ApiResponse(
         success=True,
         message="Logged out successfully",
