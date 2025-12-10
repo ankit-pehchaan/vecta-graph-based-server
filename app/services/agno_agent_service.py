@@ -87,10 +87,9 @@ Be conversational, empathetic, and professional. Act like a real financial advis
         if username in self._agents:
             return self._agents[username]
         
-        # Get user name for personalized instructions
-        user = await self.user_repository.get_by_username(username)
+        user = await self.user_repository.get_by_email(username)
         user_name = user.get("name") if user else None
-        
+        print("User",user)
         # Create agent with per-user database
         db_file = os.path.join(self._db_dir, f"agent_{username}.db")
         
@@ -171,7 +170,7 @@ Be conversational, empathetic, and professional. Act like a real financial advis
         Returns:
             Greeting message
         """
-        user = await self.user_repository.get_by_username(username)
+        user = await self.user_repository.get_by_email(username)
         user_name = user.get("name") if user else username
         
         is_first_time = await self.is_first_time_user(username)
