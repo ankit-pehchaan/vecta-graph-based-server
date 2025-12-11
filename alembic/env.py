@@ -19,7 +19,7 @@ load_dotenv()
 
 # Import Base and all models to ensure they are registered
 from app.core.database import Base
-from app.models import User, Verification, FinancialProfile, Goal, Asset, Liability, Insurance
+from app.models import User, Verification, Goal, Asset, Liability, Insurance, Superannuation
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
