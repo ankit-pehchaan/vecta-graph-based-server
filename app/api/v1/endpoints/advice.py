@@ -1,6 +1,7 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from datetime import datetime, timezone
-from app.core.dependencies import get_current_user_websocket
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.dependencies import get_current_user_websocket, get_current_user
 from app.services.advice_service import AdviceService
 from app.services.agno_agent_service import AgnoAgentService
 from app.services.profile_extractor import ProfileExtractor
@@ -8,30 +9,79 @@ from app.services.intelligence_service import IntelligenceService
 from app.repositories.user_repository import UserRepository
 from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.core.handler import AppException
-from app.core.constants import AuthErrorDetails
 from app.schemas.advice import ErrorMessage
-from app.core.database import db_manager
+from app.schemas.financial import FinancialProfile
+from app.core.database import db_manager, get_db
+from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter()
 
 
-def _get_advice_service(db_session) -> AdviceService:
-    """Create AdviceService with database repositories."""
-    user_repository = UserRepository(db_session)
-    profile_repository = FinancialProfileRepository(db_session)
+class ProfileResponse(BaseModel):
+    """Response model for profile endpoint."""
+    success: bool
+    data: Optional[FinancialProfile] = None
+    message: Optional[str] = None
 
+
+def _get_advice_service(db_session: AsyncSession) -> AdviceService:
+    """
+    Create an AdviceService with proper database session injection.
+    
+    Each WebSocket connection gets its own service instance with a
+    dedicated database session for transaction management.
+    """
+    user_repo = UserRepository(session=db_session)
+    profile_repo = FinancialProfileRepository(session=db_session)
     agent_service = AgnoAgentService(
-        user_repository=user_repository,
-        profile_repository=profile_repository
+        user_repository=user_repo,
+        profile_repository=profile_repo
     )
-    profile_extractor = ProfileExtractor(profile_repository=profile_repository)
+    profile_extractor = ProfileExtractor(profile_repository=profile_repo)
     intelligence_service = IntelligenceService()
-
     return AdviceService(
         agent_service=agent_service,
         profile_extractor=profile_extractor,
         intelligence_service=intelligence_service
     )
+
+
+@router.get("/profile", response_model=ProfileResponse)
+async def get_profile(
+    current_user: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get the current user's financial profile.
+    
+    Returns the complete financial profile including goals, assets,
+    liabilities, insurance, superannuation, and income/expense data.
+    """
+    try:
+        profile_repo = FinancialProfileRepository(session=db)
+        profile_data = await profile_repo.get_by_username(current_user)
+        
+        if not profile_data:
+            # Return empty profile structure if user has no financial data yet
+            profile_data = {
+                "username": current_user,
+                "goals": [],
+                "assets": [],
+                "liabilities": [],
+                "insurance": [],
+                "superannuation": [],
+                "income": None,
+                "monthly_income": None,
+                "expenses": None,
+                "risk_tolerance": None,
+                "financial_stage": None,
+            }
+        
+        profile = FinancialProfile(**profile_data)
+        return ProfileResponse(success=True, data=profile)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
 
 
 @router.websocket("/ws")
@@ -116,4 +166,3 @@ async def advice_websocket(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
-

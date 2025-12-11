@@ -138,6 +138,11 @@ class AuthService:
         await self.verification_repository.save(verification_token, email, verification_data)
         
         # 5. Send OTP email
+        # DEV MODE: Uncomment below to skip email sending with FIXED_OTP
+        # if settings.FIXED_OTP and settings.FIXED_OTP != "":
+        #     print(f"[DEV MODE] OTP for {email}: {otp}")
+        # else:
+        #     await send_otp_email(email, otp)
         await send_otp_email(email, otp)
         
         return {"verification_token": verification_token}
@@ -321,6 +326,16 @@ class AuthService:
             )
         
         # 5. Send new OTP email
+        # DEV MODE: Uncomment below to skip email sending with FIXED_OTP
+        # if settings.FIXED_OTP and settings.FIXED_OTP != "":
+        #     print(f"[DEV MODE] Resent OTP for {pending['email']}: {new_otp}")
+        # else:
+        #     email_sent = await send_otp_email(pending['email'], new_otp)
+        #     if not email_sent:
+        #         raise AppException(
+        #             message=AuthErrorDetails.OTP_RESEND_FAILED,
+        #             status_code=500
+        #         )
         email_sent = await send_otp_email(pending['email'], new_otp)
         if not email_sent:
             raise AppException(
