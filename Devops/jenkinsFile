@@ -80,6 +80,7 @@ pipeline {
                                 --cluster "$CLUSTER_NAME" \
                                 --services "$SERVICE_NAME" \
                                 --query "services[0].taskDefinition" \
+                                --region $AWS_REGION \
                                 --output text)
 
                             echo "Current task definition: $TASK_DEF"
@@ -89,12 +90,13 @@ pipeline {
                                 --cluster "$CLUSTER_NAME" \
                                 --service "$SERVICE_NAME" \
                                 --task-definition "$TASK_DEF" \
+                                --region $AWS_REGION \
                                 --force-new-deployment
 
                             aws ecs wait services-stable \
                                 --cluster "$CLUSTER_NAME" \
                                 --services "$SERVICE_NAME" \
-                                --region us-west-1
+                                --region $AWS_REGION
 
                             echo "ECS redeployment triggered successfully."
                         '''
