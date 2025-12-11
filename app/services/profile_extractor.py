@@ -6,7 +6,7 @@ from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.db.sqlite import SqliteDb
 from app.schemas.financial import FinancialProfile, Goal, Asset, Liability, Insurance, Superannuation
-from app.interfaces.financial_profile import IFinancialProfileRepository
+from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.core.config import settings
 
 
@@ -68,13 +68,14 @@ class ProfileExtractionResult(BaseModel):
 
 class ProfileExtractor:
     """Service for extracting financial profile information using LLM agent.
-    
+
     Uses Agno agent with structured output to accurately extract financial facts
     from conversations. No regex or hardcoded rules - pure LLM extraction.
+    Uses db_manager for fresh database sessions per operation.
     """
-    
-    def __init__(self, profile_repository: IFinancialProfileRepository):
-        self.profile_repository = profile_repository
+
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
         self._agents: dict[str, Agent] = {}  # Cache agents per user
         self._db_dir = "tmp/agents"
         
@@ -144,7 +145,10 @@ Be thorough - if the user mentions ANY financial goal, asset, debt, super, or nu
             Dictionary of changes made, or None if no changes
         """
         # Get existing profile for context (don't re-extract same info)
-        existing_profile = await self.profile_repository.get_by_username(username)
+        existing_profile = None
+        async for session in self.db_manager.get_session():
+            profile_repo = FinancialProfileRepository(session)
+            existing_profile = await profile_repo.get_by_username(username)
         
         if not existing_profile:
             # User must exist - try to save initial financial data
@@ -157,7 +161,9 @@ Be thorough - if the user mentions ANY financial goal, asset, debt, super, or nu
                     "insurance": [],
                     "superannuation": []
                 }
-                existing_profile = await self.profile_repository.save(profile_data)
+                async for session in self.db_manager.get_session():
+                    profile_repo = FinancialProfileRepository(session)
+                    existing_profile = await profile_repo.save(profile_data)
             except ValueError:
                 # User doesn't exist - can't save profile
                 print(f"[ProfileExtractor] User {username} not found, cannot extract profile")
@@ -306,7 +312,10 @@ Extract ONLY NEW financial information that is not already in the existing profi
         # If we have new items, add them to the profile
         if new_items:
             # Use add_items() to ADD new data incrementally (not replace)
-            updated_profile = await self.profile_repository.add_items(username, new_items)
+            updated_profile = None
+            async for session in self.db_manager.get_session():
+                profile_repo = FinancialProfileRepository(session)
+                updated_profile = await profile_repo.add_items(username, new_items)
             print(f"[ProfileExtractor] Profile updated for {username}, changes: {list(changes.keys())}")
             return {
                 "changes": changes,

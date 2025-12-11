@@ -25,20 +25,15 @@ class ProfileResponse(BaseModel):
     message: Optional[str] = None
 
 
-def _get_advice_service(db_session: AsyncSession) -> AdviceService:
+def _get_advice_service() -> AdviceService:
     """
-    Create an AdviceService with proper database session injection.
-    
-    Each WebSocket connection gets its own service instance with a
-    dedicated database session for transaction management.
+    Create an AdviceService with db_manager for fresh sessions per operation.
+
+    Each database operation creates its own session to ensure transaction isolation
+    and prevent "InFailedSQLTransactionError" issues in long-lived WebSocket connections.
     """
-    user_repo = UserRepository(session=db_session)
-    profile_repo = FinancialProfileRepository(session=db_session)
-    agent_service = AgnoAgentService(
-        user_repository=user_repo,
-        profile_repository=profile_repo
-    )
-    profile_extractor = ProfileExtractor(profile_repository=profile_repo)
+    agent_service = AgnoAgentService(db_manager=db_manager)
+    profile_extractor = ProfileExtractor(db_manager=db_manager)
     intelligence_service = IntelligenceService()
     return AdviceService(
         agent_service=agent_service,
@@ -128,41 +123,25 @@ async def advice_websocket(websocket: WebSocket):
             pass
         return
 
-    # Handle WebSocket connection with database session
+    # Handle WebSocket connection - services use db_manager for fresh sessions per operation
+    advice_service = _get_advice_service()
     try:
-        async for db_session in db_manager.get_session():
-            advice_service = _get_advice_service(db_session)
-            try:
-                await advice_service.handle_websocket_connection(websocket, username)
-            except WebSocketDisconnect:
-                # Client disconnected normally
-                pass
-            except Exception as e:
-                # Send error before closing
-                try:
-                    await advice_service.send_error(
-                        websocket,
-                        f"Connection error: {str(e)}",
-                        "CONNECTION_ERROR"
-                    )
-                except Exception:
-                    pass
-                finally:
-                    try:
-                        await websocket.close()
-                    except Exception:
-                        pass
+        await advice_service.handle_websocket_connection(websocket, username)
+    except WebSocketDisconnect:
+        # Client disconnected normally
+        pass
     except Exception as e:
-        error_msg = ErrorMessage(
-            message=f"Database connection error: {str(e)}",
-            code="DB_ERROR",
-            timestamp=datetime.now(timezone.utc).isoformat()
-        )
+        # Send error before closing
         try:
-            await websocket.send_json(error_msg.model_dump())
+            await advice_service.send_error(
+                websocket,
+                f"Connection error: {str(e)}",
+                "CONNECTION_ERROR"
+            )
         except Exception:
             pass
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
