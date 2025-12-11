@@ -3,25 +3,21 @@ from typing import Optional
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.db.sqlite import SqliteDb
-from app.interfaces.user import IUserRepository
-from app.interfaces.financial_profile import IFinancialProfileRepository
+from app.repositories.user_repository import UserRepository
+from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.core.config import settings
 
 
 class AgnoAgentService:
     """Service for managing Agno financial adviser agents.
-    
+
     Creates and reuses agents per user for performance (per .cursorrules).
     Each user gets their own agent instance with session history.
+    Uses db_manager for fresh database sessions per operation.
     """
-    
-    def __init__(
-        self,
-        user_repository: IUserRepository,
-        profile_repository: IFinancialProfileRepository
-    ):
-        self.user_repository = user_repository
-        self.profile_repository = profile_repository
+
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
         self._agents: dict[str, Agent] = {}  # Cache agents per user
         self._db_dir = "tmp/agents"
         
@@ -101,8 +97,12 @@ EXPERTISE:
         """
         if username in self._agents:
             return self._agents[username]
-        
-        user = await self.user_repository.get_by_email(username)
+
+        # Get user info with fresh session
+        user = None
+        async for session in self.db_manager.get_session():
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_email(username)
         user_name = user.get("name") if user else None
         print("User",user)
         # Create agent with per-user database
@@ -135,8 +135,11 @@ EXPERTISE:
         Returns:
             True if first time, False otherwise
         """
-        profile = await self.profile_repository.get_by_username(username)
-        return profile is None
+        async for session in self.db_manager.get_session():
+            profile_repo = FinancialProfileRepository(session)
+            profile = await profile_repo.get_by_username(username)
+            return profile is None
+        return True  # Default to first-time if session fails
     
     async def get_conversation_summary(self, username: str) -> Optional[str]:
         """
@@ -151,8 +154,11 @@ EXPERTISE:
         # Check if agent has any history
         # Note: Agno stores history in the database, but we can check if there are previous runs
         # For now, we'll return a simple summary based on profile existence
-        profile = await self.profile_repository.get_by_username(username)
-        
+        profile = None
+        async for session in self.db_manager.get_session():
+            profile_repo = FinancialProfileRepository(session)
+            profile = await profile_repo.get_by_username(username)
+
         if not profile:
             return None
         
@@ -185,7 +191,11 @@ EXPERTISE:
         Returns:
             Greeting message
         """
-        user = await self.user_repository.get_by_email(username)
+        user = None
+        async for session in self.db_manager.get_session():
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_email(username)
+
         user_name = user.get("name") if user else username
         
         is_first_time = await self.is_first_time_user(username)
