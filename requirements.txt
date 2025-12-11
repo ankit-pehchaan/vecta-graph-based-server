@@ -13,6 +13,7 @@ websockets
 lancedb
 openai
 boto3
+resend
 psutil
 # Database
 sqlalchemy[asyncio]>=2.0.0

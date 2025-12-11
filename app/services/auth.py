@@ -138,13 +138,15 @@ class AuthService:
         await self.verification_repository.save(verification_token, email, verification_data)
         
         # 5. Send OTP email
-        # DEV MODE: Uncomment below to skip email sending with FIXED_OTP
-        # if settings.FIXED_OTP and settings.FIXED_OTP != "":
-        #     print(f"[DEV MODE] OTP for {email}: {otp}")
-        # else:
-        #     await send_otp_email(email, otp)
-        await send_otp_email(email, otp)
-        
+        email_sent = await send_otp_email(email, otp)
+        if not email_sent:
+            # Clean up verification record if email failed
+            await self.verification_repository.delete_by_token(verification_token)
+            raise AppException(
+                message="Failed to send verification email. Please try again.",
+                status_code=500
+            )
+
         return {"verification_token": verification_token}
 
     async def verify_otp(self, verification_token: str, otp: str) -> dict[str, str]:
