@@ -89,6 +89,10 @@ class DatabaseManager:
 
         async with self._session_factory() as session:
             try:
+                # Rollback any stale transaction state from previous failed operations
+                # This handles the "InFailedSQLTransactionError" case where a connection
+                # is returned to the pool with an aborted transaction
+                await session.rollback()
                 yield session
                 await session.commit()
             except Exception:
