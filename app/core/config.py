@@ -80,11 +80,26 @@ class Settings(BaseSettings):
     FIXED_OTP: str | None = Field(default="", description="Fixed OTP for testing (leave empty for random OTP in production)")
     VERIFICATION_TOKEN_EXPIRY_MINUTES: int = Field(default=9, description="Verification token cookie expiration time in minutes")
     
-    # Email Configuration (AWS SES)
+    # Email Configuration
+    EMAIL_PROVIDER: Literal["ses", "resend"] = Field(default="ses", description="Email provider: 'ses' or 'resend'")
+    EMAIL_FROM_ADDRESS: str = Field(default="", description="Sender email address")
+    EMAIL_FROM_NAME: str = Field(default="Vecta AI", description="From name displayed in emails")
+
+    # AWS SES Configuration (used when EMAIL_PROVIDER=ses)
     AWS_SES_REGION: str = Field(default="ap-southeast-2", description="AWS SES region")
-    SES_FROM_EMAIL: str = Field(default="", description="Verified sender email address in SES")
-    SES_FROM_NAME: str = Field(default="Vecta Finance", description="From name displayed in emails")
     SES_CONFIGURATION_SET: str | None = Field(default=None, description="Optional SES configuration set name")
+
+    # Resend Configuration (used when EMAIL_PROVIDER=resend)
+    RESEND_API_KEY: str | None = Field(default=None, description="Resend API key")
+
+    # Backwards compatibility aliases
+    @property
+    def SES_FROM_EMAIL(self) -> str:
+        return self.EMAIL_FROM_ADDRESS
+
+    @property
+    def SES_FROM_NAME(self) -> str:
+        return self.EMAIL_FROM_NAME
     
     @field_validator("ACCESS_TOKEN_EXPIRE_MINUTES", "REFRESH_TOKEN_EXPIRE_DAYS")
     @classmethod
