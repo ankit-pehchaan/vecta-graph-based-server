@@ -34,21 +34,22 @@ class IntelligenceService:
         
         agent = Agent(
             name="Intelligence Analyst",
-            model=OpenAIChat(id="gpt-4o"),
-            instructions="""You are a financial intelligence analyst. Your role is to analyze financial conversations and profiles to generate concise, actionable insights.
+            model=OpenAIChat(id="gpt-4.1"),
+            instructions="""You are a financial intelligence analyst. Generate brief, actionable insights.
 
-Keep your analysis brief and focused (2-3 sentences for summary, 2-4 key insights).
-Use minimal formatting - plain text with occasional **bold** for emphasis.
+RULES - STRICTLY FOLLOW:
+- Summary: 2-3 sentences maximum
+- Insights: 2-3 bullet points maximum
+- PLAIN TEXT ONLY - no markdown, no bold, no formatting, no asterisks
+- Be specific and professional
+- Focus on actionable intelligence only
 
-Analyze the conversation and financial profile to identify:
-- Key financial patterns and trends
-- Potential risks or opportunities
-- Asset allocation concerns
-- Risk tolerance alignment
-- Financial gaps or areas needing attention
+Analyze the conversation and profile to identify:
+- Key financial patterns
+- Risks or opportunities
+- Gaps needing attention
 
-Provide a brief summary (2-3 sentences) followed by key insights.
-Be specific, professional, and focused on actionable intelligence.""",
+Keep it short and concise. No rich text formatting.""",
             db=SqliteDb(db_file=db_file),
             user_id=f"{username}_intelligence",
             markdown=False,
@@ -68,7 +69,7 @@ Be specific, professional, and focused on actionable intelligence.""",
         Stream intelligence summary from conversation and profile.
         
         Args:
-            username: Username
+            username: Username (email)
             conversation_context: Recent conversation text
             profile_data: Current financial profile data
         
@@ -79,16 +80,15 @@ Be specific, professional, and focused on actionable intelligence.""",
             agent = await self._get_intelligence_agent(username)
             
             # Build prompt with context
-            prompt = f"""Analyze the following financial conversation and profile data to generate intelligence insights.
+            prompt = f"""Analyze and provide brief intelligence.
 
-Conversation Context:
+Conversation:
 {conversation_context}
 
-Profile Data:
-{self._format_profile_for_analysis(profile_data) if profile_data else "No profile data available yet."}
+Profile:
+{self._format_profile_for_analysis(profile_data) if profile_data else "No data yet."}
 
-Generate a concise summary (2-3 sentences) and 2-4 key insights.
-Keep it brief and focused. Start with a summary paragraph, then list key insights."""
+Give a 2-3 sentence summary, then 2-3 key insights. Plain text only, no formatting."""
             
             # Run agent and get full response
             try:
@@ -117,15 +117,24 @@ Keep it brief and focused. Start with a summary paragraph, then list key insight
         if profile_data.get("goals"):
             parts.append(f"Goals: {len(profile_data['goals'])} goal(s)")
         
-        if profile_data.get("cash_balance") is not None:
-            parts.append(f"Cash Balance: ${profile_data['cash_balance']:,.2f}")
-        
-        if profile_data.get("superannuation") is not None:
-            parts.append(f"Superannuation: ${profile_data['superannuation']:,.2f}")
-        
+        # Calculate cash balance from assets
         if profile_data.get("assets"):
+            cash_assets = [
+                a for a in profile_data["assets"] 
+                if a.get("asset_type") in ("cash", "savings")
+            ]
+            if cash_assets:
+                total_cash = sum(a.get("value", 0) for a in cash_assets if a.get("value"))
+                parts.append(f"Cash/Savings: ${total_cash:,.2f}")
+            
             total_assets = sum(asset.get("value", 0) for asset in profile_data["assets"] if asset.get("value"))
             parts.append(f"Total Assets: ${total_assets:,.2f}")
+        
+        # Superannuation totals
+        if profile_data.get("superannuation"):
+            total_super = sum(s.get("balance", 0) for s in profile_data["superannuation"] if s.get("balance"))
+            parts.append(f"Total Superannuation: ${total_super:,.2f}")
+            parts.append(f"Super Funds: {len(profile_data['superannuation'])} fund(s)")
         
         if profile_data.get("liabilities"):
             total_liabilities = sum(liab.get("amount", 0) for liab in profile_data["liabilities"] if liab.get("amount"))

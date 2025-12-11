@@ -1,13 +1,17 @@
 """Dependencies for FastAPI endpoints."""
 from typing import Callable
-from fastapi import Request, WebSocket
+from fastapi import Request, WebSocket, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from limits import parse_many
 from app.core.handler import AppException
 from app.core.constants import AuthErrorDetails, GeneralErrorDetails
 from app.core.config import settings
-from app.core.security import decode_token_from_websocket
+from app.core.security import decode_token_from_websocket, decode_token
+
+# HTTP Bearer token scheme
+security = HTTPBearer()
 
 # Can be changed to Redis later: storage_uri="redis://localhost:6379"
 limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
@@ -110,6 +114,46 @@ async def check_otp_verify_rate_limit(request: Request) -> None:
         )
     
     return None
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> str:
+    """
+    Authenticate HTTP request using JWT Bearer token.
+    
+    Args:
+        credentials: HTTPAuthorizationCredentials from Bearer token
+    
+    Returns:
+        Username from token payload
+    
+    Raises:
+        AppException: If authentication fails
+    """
+    token = credentials.credentials
+    try:
+        payload = decode_token(token, token_type="access")
+    except Exception:
+        raise AppException(
+            message=GeneralErrorDetails.UNAUTHORIZED,
+            status_code=401
+        )
+    
+    if not payload:
+        raise AppException(
+            message=GeneralErrorDetails.UNAUTHORIZED,
+            status_code=401
+        )
+    
+    username = payload.get("sub")
+    if not username:
+        raise AppException(
+            message=GeneralErrorDetails.UNAUTHORIZED,
+            status_code=401
+        )
+    
+    return username
 
 
 async def get_current_user_websocket(websocket: WebSocket) -> str:
