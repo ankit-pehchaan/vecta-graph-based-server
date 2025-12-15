@@ -20,7 +20,10 @@ class User(Base):
         String(255), unique=True, nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Nullable for OAuth users
+    oauth_provider: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, index=True
+    ) 
     account_status: Mapped[str] = mapped_column(
         String(20), default=AccountStatus.ACTIVE.value, nullable=False
     )
@@ -79,6 +82,7 @@ class User(Base):
             "email": self.email,
             "name": self.name,
             "hashed_password": self.hashed_password,
+            "oauth_provider": self.oauth_provider,
             "account_status": self.account_status,
             "failed_login_attempts": self.failed_login_attempts,
             "last_failed_attempt": (

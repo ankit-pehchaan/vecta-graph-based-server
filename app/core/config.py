@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     # Resend Configuration (used when EMAIL_PROVIDER=resend)
     RESEND_API_KEY: str | None = Field(default=None, description="Resend API key")
 
+    # Google OAuth Configuration
+    GOOGLE_CLIENT_ID: str | None = Field(default=None, description="Google OAuth Client ID")
+    GOOGLE_CLIENT_SECRET: str | None = Field(default=None, description="Google OAuth Client Secret")
+    GOOGLE_REDIRECT_URI: str | None = Field(default=None, description="Google OAuth Redirect URI")
+
     # Backwards compatibility aliases
     @property
     def SES_FROM_EMAIL(self) -> str:
