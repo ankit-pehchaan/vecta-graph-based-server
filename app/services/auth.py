@@ -199,6 +199,7 @@ class AuthService:
             "name": pending['name'],
             "email": pending['email'],
             "hashed_password": pending['hashed_password'],
+            "oauth_provider": "local",
             "account_status": AccountStatus.ACTIVE,
             "failed_login_attempts": 0,
             "last_failed_attempt": None,
@@ -225,6 +226,21 @@ class AuthService:
         if not user:
             raise AppException(
                 message=AuthErrorDetails.USER_NOT_FOUND,
+                status_code=401
+            )
+
+        # Security: Prevent password login for OAuth users
+        oauth_provider = user.get("oauth_provider")
+        if oauth_provider and oauth_provider != "local":
+            raise AppException(
+                message=f"This account uses {oauth_provider} authentication. Please sign in with {oauth_provider}.",
+                status_code=400
+            )
+
+        # Security: Ensure hashed_password exists for local users
+        if not user.get("hashed_password"):
+            raise AppException(
+                message=AuthErrorDetails.INVALID_PASSWORD,
                 status_code=401
             )
 

@@ -9,7 +9,7 @@ from limits import parse_many
 from app.core.handler import AppException
 from app.core.constants import AuthErrorDetails, GeneralErrorDetails
 from app.core.config import settings
-from app.core.security import decode_token_from_websocket, decode_token
+from app.core.security import decode_token
 from app.core.database import get_db
 
 # HTTP Bearer token scheme
@@ -273,21 +273,23 @@ async def get_current_user(
 
 async def get_current_user_websocket(websocket: WebSocket) -> str:
     """
-    Authenticate WebSocket connection with automatic token refresh support.
+    Authenticate WebSocket connection using HTTP-only cookies.
     
-    Client should send both tokens as query parameters:
-    - access_token: JWT access token
-    - refresh_token: JWT refresh token 
+    Client should send cookies automatically with WebSocket connection:
+    - access_token: JWT access token (HTTP-only cookie)
+    - refresh_token: JWT refresh token (HTTP-only cookie)
     
     Flow:
-    1. Try access_token from query params
-    2. If access_token invalid/expired, try refresh_token from query params
-    3. If refresh_token valid, allow connection (new tokens generated but not sent)
-    4. Client will get refreshed cookies on next HTTP request automatically
+    1. Try access_token from cookies
+    2. If access_token invalid/expired, try refresh_token from cookies
+    3. If refresh_token valid, allow connection
+    4. Client will get refreshed tokens on next HTTP request automatically
     
-    Example WebSocket URL:
-    ws://localhost:8000/api/v1/advice/ws?access_token=xxx&refresh_token=yyy
-
+    Note: No token refreshing logic here - tokens are refreshed via REST API routes.
+    
+    Example WebSocket connection:
+    ws://localhost:8000/api/v1/advice/ws
+    (Cookies sent automatically by browser)
     
     Args:
         websocket: WebSocket connection
@@ -298,14 +300,13 @@ async def get_current_user_websocket(websocket: WebSocket) -> str:
     Raises:
         AppException: If authentication fails
     """
-    from app.core.security import create_access_token, create_refresh_token
     from jose import JWTError
     
-    query_params = dict(websocket.query_params)
+    cookies = websocket.cookies
     
-    # Get tokens from query parameters
-    access_token = query_params.get("access_token")
-    refresh_token = query_params.get("refresh_token")
+    # Get tokens from cookies
+    access_token = cookies.get("access_token")
+    refresh_token = cookies.get("refresh_token")
     
     # Try access token first
     if access_token:
@@ -313,7 +314,7 @@ async def get_current_user_websocket(websocket: WebSocket) -> str:
             payload = decode_token(access_token, token_type="access")
             username = payload.get("sub")
             if username:
-                return username  # Valid access token, no refresh needed
+                return username  # Valid access token
         except JWTError:
             # Access token invalid/expired - will try refresh token below
             pass
@@ -338,6 +339,7 @@ async def get_current_user_websocket(websocket: WebSocket) -> str:
                 status_code=401
             )
     
+    # Both tokens missing or invalid
     raise AppException(
         message=GeneralErrorDetails.UNAUTHORIZED,
         status_code=401

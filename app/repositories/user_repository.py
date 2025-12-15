@@ -43,12 +43,15 @@ class UserRepository(IUserRepository):
             user_data["last_failed_attempt"] = None
         if "locked_at" not in user_data:
             user_data["locked_at"] = None
+        if "oauth_provider" not in user_data:
+            user_data["oauth_provider"] = None  # Default to None for backward compatibility
 
         # Create new user
         user = User(
             email=user_data["email"],
             name=user_data["name"],
-            hashed_password=user_data["hashed_password"],
+            hashed_password=user_data.get("hashed_password"),
+            oauth_provider=user_data.get("oauth_provider"),
             account_status=user_data["account_status"],
             failed_login_attempts=user_data["failed_login_attempts"],
             last_failed_attempt=user_data.get("last_failed_attempt"),
@@ -67,6 +70,8 @@ class UserRepository(IUserRepository):
             update_values["name"] = user_data["name"]
         if "hashed_password" in user_data:
             update_values["hashed_password"] = user_data["hashed_password"]
+        if "oauth_provider" in user_data:
+            update_values["oauth_provider"] = user_data["oauth_provider"]
         if "account_status" in user_data:
             status = user_data["account_status"]
             update_values["account_status"] = (
@@ -135,3 +140,63 @@ class UserRepository(IUserRepository):
         )
         await self._session.execute(stmt)
         await self._session.flush()
+
+    async def create_oauth_user(
+        self, email: str, name: str, oauth_provider: str
+    ) -> dict:
+        """
+        Create a new user from OAuth authentication.
+        
+        OAuth users don't have passwords, so hashed_password is set to None.
+        Account is automatically active and email is verified by OAuth provider.
+        
+        Args:
+            email: User's email from OAuth provider
+            name: User's name from OAuth provider
+            oauth_provider: OAuth provider name ('google', 'facebook', etc.)
+            
+        Returns:
+            Created user dict
+        """
+        user_data = {
+            "email": email,
+            "name": name,
+            "hashed_password": None,
+            "oauth_provider": oauth_provider,
+            "account_status": AccountStatus.ACTIVE,
+            "failed_login_attempts": 0,
+            "last_failed_attempt": None,
+            "locked_at": None,
+        }
+        return await self.save(user_data)
+
+    async def link_oauth_provider(
+        self, email: str, oauth_provider: str
+    ) -> Optional[dict]:
+        """
+        Link an OAuth provider to an existing user account.
+        
+        This allows users who registered with email/password to also
+        sign in with OAuth (or vice versa).
+        
+        Args:
+            email: User's email address
+            oauth_provider: OAuth provider to link ('google', etc.)
+            
+        Returns:
+            Updated user dict if successful, None if user not found
+        """
+        user = await self.get_by_email(email)
+        if not user:
+            return None
+
+        # Update oauth_provider
+        stmt = (
+            update(User)
+            .where(User.email == email)
+            .values(oauth_provider=oauth_provider)
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+
+        return await self.get_by_email(email)
