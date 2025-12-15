@@ -19,7 +19,8 @@ from app.core.database import get_db
 from app.core.dependencies import (
     check_login_rate_limit,
     check_register_rate_limit,
-    check_otp_verify_rate_limit
+    check_otp_verify_rate_limit,
+    get_current_user
 )
 from app.core.handler import AppException
 from app.core.constants import AuthErrorDetails, GeneralErrorDetails
@@ -36,99 +37,6 @@ async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     return AuthService(
         user_repository=user_repository,
         verification_repository=verification_repository
-    )
-
-
-async def get_current_user(
-    response: Response,
-    access_token: str = Cookie(None),
-    refresh_token: str = Cookie(None),
-    db: AsyncSession = Depends(get_db)
-) -> dict:
-    """
-    Dependency to get current authenticated user with automatic token refresh.
-    
-    Flow:
-    1. Try to validate access_token
-    2. If access_token is invalid/expired, try refresh_token
-    3. If refresh_token is valid, issue new tokens and set cookies
-    4. If both tokens are invalid, raise 401
-
-    Raises:
-        AppException: If both tokens are missing, invalid, or expired
-    """
-    user_repository = UserRepository(db)
-    
-    # Try access token first
-    if access_token:
-        try:
-            payload = decode_token(access_token, token_type="access")
-            email: str = payload.get("sub")
-
-            if email:
-                user = await user_repository.get_by_email(email)
-                if user:
-                    return user
-        except JWTError:
-            # Access token invalid/expired - will try refresh token below
-            pass
-
-    # Access token failed - try refresh token
-    if refresh_token:
-        try:
-            payload = decode_token(refresh_token, token_type="refresh")
-            email: str = payload.get("sub")
-
-            if not email:
-                raise AppException(
-                    message=AuthErrorDetails.REFRESH_TOKEN_INVALID,
-                    status_code=401
-                )
-
-            user = await user_repository.get_by_email(email)
-            if not user:
-                raise AppException(
-                    message=AuthErrorDetails.USER_NOT_FOUND,
-                    status_code=401
-                )
-            # Generate new tokens (token rotation for security)
-            from app.core.security import create_access_token, create_refresh_token
-            token_data = {"sub": email}
-            new_access_token = create_access_token(token_data)
-            new_refresh_token = create_refresh_token(token_data)
-            # Set new cookies
-            access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-            refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-
-            response.set_cookie(
-                key="access_token",
-                value=new_access_token,
-                httponly=settings.COOKIE_HTTP_ONLY,
-                secure=settings.COOKIE_SECURE,
-                samesite=settings.COOKIE_SAME_SITE,
-                max_age=int(access_token_expires.total_seconds())
-            )
-            response.set_cookie(
-                key="refresh_token",
-                value=new_refresh_token,
-                httponly=settings.COOKIE_HTTP_ONLY,
-                secure=settings.COOKIE_SECURE,
-                samesite=settings.COOKIE_SAME_SITE,
-                max_age=int(refresh_token_expires.total_seconds())
-            )
-
-            return user
-
-        except JWTError:
-            raise AppException(
-                message=AuthErrorDetails.REFRESH_TOKEN_INVALID,
-                status_code=401
-            )
-
-    # Both tokens missing or invalid
-    raise AppException(
-        message=GeneralErrorDetails.UNAUTHORIZED,
-        status_code=401
     )
 
 

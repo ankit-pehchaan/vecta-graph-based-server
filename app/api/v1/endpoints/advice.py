@@ -44,7 +44,7 @@ def _get_advice_service() -> AdviceService:
 
 @router.get("/profile", response_model=ProfileResponse)
 async def get_profile(
-    current_user: str = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -54,13 +54,16 @@ async def get_profile(
     liabilities, insurance, superannuation, and income/expense data.
     """
     try:
+        # Extract email from user dict
+        username = current_user.get("email")
+        
         profile_repo = FinancialProfileRepository(session=db)
-        profile_data = await profile_repo.get_by_username(current_user)
+        profile_data = await profile_repo.get_by_username(username)
         
         if not profile_data:
             # Return empty profile structure if user has no financial data yet
             profile_data = {
-                "username": current_user,
+                "username": username,
                 "goals": [],
                 "assets": [],
                 "liabilities": [],
