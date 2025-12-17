@@ -81,13 +81,17 @@ class DocumentParser:
         bucket, key = self._parse_s3_url(s3_url)
 
         try:
+            print(f"[DocumentParser] Downloading from bucket={bucket}, key={key}")
             response = self.s3_client.get_object(Bucket=bucket, Key=key)
             content = response['Body'].read()
             content_type = response.get('ContentType', '')
             print(f"[DocumentParser] Downloaded {len(content)} bytes from S3")
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            raise ValueError(f"Failed to download from S3: {error_code}") from e
+            error_msg = e.response.get('Error', {}).get('Message', 'Unknown error')
+            print(f"[DocumentParser] S3 Error: {error_code} - {error_msg}")
+            print(f"[DocumentParser] Bucket: {bucket}, Key: {key}")
+            raise ValueError(f"Failed to download from S3: {error_code} - {error_msg}") from e
 
         # Decrypt content if KMS key is provided
         if kms_key_arn:
