@@ -7,17 +7,26 @@ from botocore.exceptions import ClientError
 import pdfplumber
 import aws_encryption_sdk
 from aws_encryption_sdk import CommitmentPolicy
+from app.core.config import settings
 
 
 class DocumentParser:
     """Download, decrypt, and parse documents from S3 URLs."""
 
     def __init__(self):
-        self.s3_client = boto3.client('s3')
+        # Get AWS region from settings
+        aws_region = getattr(settings, 'AWS_REGION', 'ap-southeast-2')
+
+        # Initialize S3 client with region
+        self.s3_client = boto3.client('s3', region_name=aws_region)
+
         # Initialize AWS Encryption SDK client
         self.encryption_client = aws_encryption_sdk.EncryptionSDKClient(
             commitment_policy=CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT
         )
+
+        # Store region for KMS provider
+        self.aws_region = aws_region
 
     def _decrypt_content(self, ciphertext: bytes, kms_key_arn: str) -> bytes:
         """
@@ -30,9 +39,15 @@ class DocumentParser:
         Returns:
             Decrypted plaintext bytes
         """
-        # Strict Master Key Provider: Ensure we only decrypt using the expected key
+        import botocore.session
+
+        # Create a botocore session that will use ECS task role credentials
+        botocore_session = botocore.session.Session()
+
+        # Strict Master Key Provider with explicit botocore session
         master_key_provider = aws_encryption_sdk.StrictAwsKmsMasterKeyProvider(
-            key_ids=[kms_key_arn]
+            key_ids=[kms_key_arn],
+            botocore_session=botocore_session
         )
 
         # Decrypt
