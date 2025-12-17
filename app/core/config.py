@@ -97,6 +97,18 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str | None = Field(default=None, description="Google OAuth Client Secret")
     GOOGLE_REDIRECT_URI: str | None = Field(default=None, description="Google OAuth Redirect URI")
 
+    # Document Processing Configuration
+    DOC_UPLOAD_LAMBDA_URL: str = Field(
+        default="https://your-api-id.execute-api.ap-southeast-2.amazonaws.com/Prod/upload/",
+        description="API Gateway URL for document redaction Lambda"
+    )
+
+    # Document Processing Configuration
+    DOC_UPLOAD_LAMBDA_URL: str = Field(
+        default="https://your-api-id.execute-api.ap-southeast-2.amazonaws.com/Prod/upload/",
+        description="API Gateway URL for document redaction Lambda"
+    )
+
     # Backwards compatibility aliases
     @property
     def SES_FROM_EMAIL(self) -> str:

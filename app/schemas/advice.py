@@ -55,12 +55,59 @@ class ErrorMessage(BaseModel):
 class IntelligenceSummary(BaseModel):
     """AI-generated intelligence summary (streaming)."""
     model_config = ConfigDict(extra='ignore')
-    
+
     type: Literal["intelligence_summary"] = "intelligence_summary"
     content: str  # Chunk of content when streaming
     is_complete: bool = False  # True when this is the final chunk
     summary: Optional[str] = None  # Full summary (for non-streaming/final)
     insights: list[str] = []
+    timestamp: Optional[str] = None
+
+
+# Document processing messages
+
+class DocumentUpload(BaseModel):
+    """Document upload request from client."""
+    model_config = ConfigDict(extra='forbid')
+
+    type: Literal["document_upload"] = "document_upload"
+    s3_url: str
+    document_type: str  # "bank_statement", "tax_return", "investment_statement", "payslip"
+    filename: str
+    timestamp: Optional[str] = None
+
+
+class DocumentProcessing(BaseModel):
+    """Status update during document processing."""
+    model_config = ConfigDict(extra='ignore')
+
+    type: Literal["document_processing"] = "document_processing"
+    status: str  # "downloading", "parsing", "analyzing", "complete", "error"
+    message: str
+    timestamp: Optional[str] = None
+
+
+class DocumentExtraction(BaseModel):
+    """Extraction result sent for user confirmation."""
+    model_config = ConfigDict(extra='ignore')
+
+    type: Literal["document_extraction"] = "document_extraction"
+    extraction_id: str  # UUID to track this extraction
+    summary: str  # Human-readable summary for chat
+    extracted_data: dict  # ProfileExtractionResult as dict
+    document_type: str
+    requires_confirmation: bool = True
+    timestamp: Optional[str] = None
+
+
+class DocumentConfirm(BaseModel):
+    """User confirmation/rejection of extracted data."""
+    model_config = ConfigDict(extra='forbid')
+
+    type: Literal["document_confirm"] = "document_confirm"
+    extraction_id: str
+    confirmed: bool
+    corrections: Optional[dict] = None  # User corrections if any
     timestamp: Optional[str] = None
 
 

@@ -106,6 +106,8 @@ EXAMPLES:
 - "I have a $500k mortgage" → Liability with liability_type: "home_loan", description: "Home loan", amount: 500000
 - "I have life insurance" → Insurance with insurance_type: "life"
 - "My super balance is $200k with AustralianSuper" → Superannuation with fund_name: "AustralianSuper", balance: 200000
+- "I'm 35, married with 2 kids" → Note in goal motivation or description: "Age 35, married with 2 dependents"
+- "I earn $150k per year" → income: 150000
 
 RULES:
 1. Extract what is mentioned - don't infer
@@ -116,7 +118,17 @@ RULES:
 6. Superannuation goes into the 'superannuation' list with fund details
 7. Only extract NEW information not already in the existing profile
 
-Be thorough - if the user mentions ANY financial goal, asset, debt, super, or number, extract it.""",
+LIFE STAGE INDICATORS TO CAPTURE:
+When the user mentions personal context, capture it:
+- Family situation: single, partnered, married, divorced
+- Dependents: kids (and ages), elderly parents, others relying on them
+- Career stage: early career, established, senior, pre-retirement
+- Age or age range if mentioned
+- Employment type: employee, self-employed, contractor, business owner
+
+Store life stage info in goal motivation field or as a goal description like "Life stage: [details]"
+
+Be thorough - extract ANY financial goal, asset, debt, super, income, or life stage information mentioned.""",
             db=SqliteDb(db_file=db_file),
             user_id=f"{username}_extractor",
             output_schema=ProfileExtractionResult,

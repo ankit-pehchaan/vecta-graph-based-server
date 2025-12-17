@@ -2,6 +2,7 @@ from typing import Optional
 from datetime import datetime, timezone
 import uuid
 import secrets
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.interfaces.user import IUserRepository
 from app.interfaces.verification import IVerificationRepository
 from app.core.security import (
@@ -14,20 +15,32 @@ from app.core.handler import AppException
 from app.core.constants import AuthErrorDetails, AccountStatus
 from app.core.config import settings
 from app.services.email import send_otp_email
+from app.services.kms_service import KmsService
 
 
 class AuthService:
     def __init__(
         self,
         user_repository: IUserRepository,
-        verification_repository: IVerificationRepository
+        verification_repository: IVerificationRepository,
+        session: Optional[AsyncSession] = None
     ):
         self.user_repository = user_repository
         self.verification_repository = verification_repository
+        self.session = session
+        self._kms_service: Optional[KmsService] = None
 
-    def _generate_tokens(self, email: str) -> dict[str, str]:
+    def _get_kms_service(self) -> Optional[KmsService]:
+        """Get KMS service if session is available."""
+        if self.session and not self._kms_service:
+            self._kms_service = KmsService(session=self.session)
+        return self._kms_service
+
+    def _generate_tokens(self, email: str, user_id: Optional[int] = None) -> dict[str, str]:
         """Generate access and refresh tokens for a user."""
         token_data = {"sub": email}
+        if user_id is not None:
+            token_data["user_id"] = user_id
         return {
             "access_token": create_access_token(token_data),
             "refresh_token": create_refresh_token(token_data)
@@ -205,12 +218,25 @@ class AuthService:
             "last_failed_attempt": None,
             "locked_at": None
         }
-        await self.user_repository.save(user_data)
-        
-        # 6. Generate tokens
-        tokens = self._generate_tokens(pending['email'])
-        
-        # 7. Delete pending verification
+        saved_user = await self.user_repository.save(user_data)
+
+        # 6. Create KMS key for the new user (non-blocking on failure)
+        kms_service = self._get_kms_service()
+        if kms_service and saved_user.get('id'):
+            try:
+                await kms_service.create_and_save_user_key(
+                    user_id=saved_user['id'],
+                    user_email=pending['email']
+                )
+                print(f"[Auth] Created KMS key for user {saved_user['id']}")
+            except Exception as e:
+                # Log error but don't block signup - KMS key can be created later
+                print(f"[Auth] Warning: Failed to create KMS key for user {saved_user['id']}: {e}")
+
+        # 7. Generate tokens
+        tokens = self._generate_tokens(pending['email'], user_id=saved_user.get('id'))
+
+        # 8. Delete pending verification
         await self.verification_repository.delete_by_token(verification_token)
         
         return {
@@ -296,10 +322,10 @@ class AuthService:
 
         await self.user_repository.reset_failed_attempts(email)
 
-        tokens = self._generate_tokens(email)
-        
+        tokens = self._generate_tokens(email, user_id=final_user.get('id'))
+
         return {
-            "user": user,
+            "user": final_user,
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"]
         }
