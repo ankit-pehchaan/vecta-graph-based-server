@@ -3,11 +3,13 @@ import secrets
 from typing import Optional
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.handler import AppException
 from app.core.security import create_access_token, create_refresh_token
 from app.repositories.user_repository import UserRepository
 from app.schemas.oauth import GoogleUserInfo
+from app.services.kms_service import KmsService
 
 
 class OAuthService:
@@ -25,14 +27,23 @@ class OAuthService:
         "https://www.googleapis.com/auth/userinfo.profile",
     ]
 
-    def __init__(self, user_repository: UserRepository):
+    def __init__(self, user_repository: UserRepository, session: Optional[AsyncSession] = None):
         """
         Initialize OAuth service.
 
         Args:
             user_repository: User repository for database operations
+            session: Database session for KMS key creation
         """
         self.user_repository = user_repository
+        self.session = session
+        self._kms_service: Optional[KmsService] = None
+
+    def _get_kms_service(self) -> Optional[KmsService]:
+        """Get KMS service if session is available."""
+        if self.session and not self._kms_service:
+            self._kms_service = KmsService(session=self.session)
+        return self._kms_service
 
     def _validate_config(self) -> None:
         """
@@ -232,15 +243,38 @@ class OAuthService:
 
         else:
             # User doesn't exist - REGISTER flow
-            await self.user_repository.create_oauth_user(
+            new_user = await self.user_repository.create_oauth_user(
                 email=google_user.email,
                 name=google_user.name,
                 oauth_provider="google",
             )
             is_new_user = True
 
+            # Create KMS key for the new user (non-blocking on failure)
+            kms_service = self._get_kms_service()
+            if kms_service and new_user.get('id'):
+                try:
+                    await kms_service.create_and_save_user_key(
+                        user_id=new_user['id'],
+                        user_email=google_user.email
+                    )
+                    print(f"[OAuth] Created KMS key for user {new_user['id']}")
+                except Exception as e:
+                    # Log error but don't block signup - KMS key can be created later
+                    print(f"[OAuth] Warning: Failed to create KMS key for user {new_user['id']}: {e}")
+
         # 3. Generate JWT tokens (same for both login and register)
+        # Get user_id from existing_user or new_user
+        user_id = None
+        if is_new_user:
+            user_id = new_user.get('id')
+        else:
+            user_id = existing_user.get('id')
+
         token_data = {"sub": google_user.email}
+        if user_id is not None:
+            token_data["user_id"] = user_id
+
         access_token = create_access_token(token_data)
         refresh_token = create_refresh_token(token_data)
 

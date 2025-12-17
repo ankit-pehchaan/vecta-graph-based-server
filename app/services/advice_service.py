@@ -7,13 +7,16 @@ from starlette.websockets import WebSocketState
 from app.services.agno_agent_service import AgnoAgentService
 from app.services.profile_extractor import ProfileExtractor
 from app.services.intelligence_service import IntelligenceService
+from app.services.document_agent_service import DocumentAgentService
 from app.schemas.advice import (
     UserMessage,
     AgentResponse,
     ProfileUpdate,
     Greeting,
     ErrorMessage,
-    IntelligenceSummary
+    IntelligenceSummary,
+    DocumentUpload,
+    DocumentConfirm
 )
 from app.schemas.financial import FinancialProfile
 
@@ -25,11 +28,13 @@ class AdviceService:
         self,
         agent_service: AgnoAgentService,
         profile_extractor: ProfileExtractor,
-        intelligence_service: Optional[IntelligenceService] = None
+        intelligence_service: Optional[IntelligenceService] = None,
+        document_agent_service: Optional[DocumentAgentService] = None
     ):
         self.agent_service = agent_service
         self.profile_extractor = profile_extractor
         self.intelligence_service = intelligence_service or IntelligenceService()
+        self.document_agent_service = document_agent_service
         self._conversation_contexts: dict[str, str] = {}  # Track conversation context per user
     
     async def send_message(self, websocket: WebSocket, message: dict) -> bool:
@@ -353,25 +358,68 @@ class AdviceService:
                     # Parse user message
                     try:
                         message_data = json.loads(data)
-                        user_msg = UserMessage(**message_data)
-                        user_text = user_msg.content
+                        message_type = message_data.get("type", "user_message")
                     except (json.JSONDecodeError, ValueError):
-                        # If not JSON, treat as plain text
-                        user_text = data
-                    
-                    # Process message and stream response
+                        # If not JSON, treat as plain text user message
+                        message_data = {"content": data}
+                        message_type = "user_message"
+
+                    # Handle different message types
                     try:
-                        async for response_chunk in self.process_user_message(
-                            websocket,
-                            username,
-                            user_text
-                        ):
-                            # Check connection before sending each chunk
-                            if not self._is_websocket_connected(websocket):
-                                break
-                            
-                            if not await self.send_message(websocket, response_chunk):
-                                break
+                        if message_type == "document_upload":
+                            # Handle document upload
+                            if not self.document_agent_service:
+                                await self.send_error(
+                                    websocket,
+                                    "Document processing is not available",
+                                    "DOCUMENT_SERVICE_UNAVAILABLE"
+                                )
+                                continue
+
+                            doc_upload = DocumentUpload(**message_data)
+                            asyncio.create_task(
+                                self._process_document_upload(
+                                    websocket,
+                                    username,
+                                    doc_upload.s3_url,
+                                    doc_upload.document_type,
+                                    doc_upload.filename
+                                )
+                            )
+
+                        elif message_type == "document_confirm":
+                            # Handle document confirmation
+                            if not self.document_agent_service:
+                                await self.send_error(
+                                    websocket,
+                                    "Document processing is not available",
+                                    "DOCUMENT_SERVICE_UNAVAILABLE"
+                                )
+                                continue
+
+                            doc_confirm = DocumentConfirm(**message_data)
+                            await self._handle_document_confirmation(
+                                websocket,
+                                username,
+                                doc_confirm
+                            )
+
+                        else:
+                            # Handle regular user message
+                            user_text = message_data.get("content", data)
+
+                            async for response_chunk in self.process_user_message(
+                                websocket,
+                                username,
+                                user_text
+                            ):
+                                # Check connection before sending each chunk
+                                if not self._is_websocket_connected(websocket):
+                                    break
+
+                                if not await self.send_message(websocket, response_chunk):
+                                    break
+
                     except WebSocketDisconnect:
                         break
                     except Exception as stream_error:
@@ -406,3 +454,101 @@ class AdviceService:
                     await websocket.close()
             except Exception:
                 pass
+
+    async def _process_document_upload(
+        self,
+        websocket: WebSocket,
+        username: str,
+        s3_url: str,
+        document_type: str,
+        filename: str
+    ) -> None:
+        """
+        Background task to process document upload.
+
+        Streams processing status updates and extraction results to the WebSocket.
+        """
+        try:
+            if not self._is_websocket_connected(websocket):
+                print(f"[Document] WebSocket not connected for {username}, skipping processing")
+                return
+
+            print(f"[Document] Starting document processing for {username}: {filename}")
+
+            async for update in self.document_agent_service.process_document(
+                username,
+                s3_url,
+                document_type,
+                filename
+            ):
+                if not self._is_websocket_connected(websocket):
+                    print(f"[Document] WebSocket disconnected during processing for {username}")
+                    return
+
+                if not await self.send_message(websocket, update):
+                    return
+
+            print(f"[Document] Document processing complete for {username}: {filename}")
+
+        except Exception as e:
+            print(f"[Document] Error processing document: {e}")
+            import traceback
+            traceback.print_exc()
+
+            if self._is_websocket_connected(websocket):
+                await self.send_error(
+                    websocket,
+                    f"Document processing failed: {str(e)}",
+                    "DOCUMENT_PROCESSING_ERROR"
+                )
+
+    async def _handle_document_confirmation(
+        self,
+        websocket: WebSocket,
+        username: str,
+        confirmation: DocumentConfirm
+    ) -> None:
+        """
+        Handle user confirmation of extracted document data.
+
+        If confirmed, updates the financial profile and sends a profile update.
+        """
+        try:
+            print(f"[Document] Handling confirmation for extraction {confirmation.extraction_id}")
+
+            result = await self.document_agent_service.confirm_extraction(
+                username,
+                confirmation.extraction_id,
+                confirmation.confirmed,
+                confirmation.corrections
+            )
+
+            if result and self._is_websocket_connected(websocket):
+                # Send profile update
+                profile_data = result["profile"]
+                profile = FinancialProfile(**profile_data)
+
+                profile_update = ProfileUpdate(
+                    profile=profile,
+                    changes=result.get("changes"),
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+
+                message_dict = profile_update.model_dump(mode='json')
+                await self.send_message(websocket, message_dict)
+                print(f"[Document] Profile updated for {username} after document confirmation")
+
+            elif not confirmation.confirmed:
+                print(f"[Document] Extraction {confirmation.extraction_id} was rejected by user")
+
+        except Exception as e:
+            print(f"[Document] Error handling document confirmation: {e}")
+            import traceback
+            traceback.print_exc()
+
+            if self._is_websocket_connected(websocket):
+                await self.send_error(
+                    websocket,
+                    f"Failed to process confirmation: {str(e)}",
+                    "DOCUMENT_CONFIRM_ERROR"
+                )

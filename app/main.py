@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.database import db_manager
 
 logger = logging.getLogger(__name__)
-
+logging.getLogger('sqlalchemy.engine').setLevel(logging.DEBUG)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

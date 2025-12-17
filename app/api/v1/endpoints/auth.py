@@ -36,7 +36,8 @@ async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     verification_repository = VerificationRepository(db)
     return AuthService(
         user_repository=user_repository,
-        verification_repository=verification_repository
+        verification_repository=verification_repository,
+        session=db  # Pass session for KMS key creation on signup
     )
 
 
@@ -236,7 +237,7 @@ async def get_oauth_service(db: AsyncSession = Depends(get_db)):
     """Dependency injection for OAuthService."""
     from app.services.oauth_service import OAuthService
     user_repository = UserRepository(db)
-    return OAuthService(user_repository=user_repository)
+    return OAuthService(user_repository=user_repository, session=db)
 
 
 @router.get("/google/login", response_model=ApiResponse, status_code=status.HTTP_200_OK)
