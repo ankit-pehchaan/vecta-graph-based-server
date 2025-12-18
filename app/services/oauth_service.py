@@ -250,26 +250,31 @@ class OAuthService:
             )
             is_new_user = True
 
-            # Create KMS key for the new user (non-blocking on failure)
-            kms_service = self._get_kms_service()
-            if kms_service and new_user.get('id'):
-                try:
-                    await kms_service.create_and_save_user_key(
-                        user_id=new_user['id'],
-                        user_email=google_user.email
-                    )
-                    print(f"[OAuth] Created KMS key for user {new_user['id']}")
-                except Exception as e:
-                    # Log error but don't block signup - KMS key can be created later
-                    print(f"[OAuth] Warning: Failed to create KMS key for user {new_user['id']}: {e}")
-
-        # 3. Generate JWT tokens (same for both login and register)
-        # Get user_id from existing_user or new_user
+        # 3. Get user_id and ensure KMS key exists
         user_id = None
         if is_new_user:
             user_id = new_user.get('id')
         else:
             user_id = existing_user.get('id')
+
+        # Create KMS key if it doesn't exist (for new users or existing users without key)
+        if user_id:
+            kms_service = self._get_kms_service()
+            if kms_service:
+                try:
+                    # Check if user already has a KMS key
+                    existing_key = await kms_service.get_user_key(user_id)
+                    if not existing_key:
+                        await kms_service.create_and_save_user_key(
+                            user_id=user_id,
+                            user_email=google_user.email
+                        )
+                        print(f"[OAuth] Created KMS key for user {user_id}")
+                    else:
+                        print(f"[OAuth] User {user_id} already has KMS key")
+                except Exception as e:
+                    # Log error but don't block login - KMS key can be created later
+                    print(f"[OAuth] Warning: Failed to create/check KMS key for user {user_id}: {e}")
 
         token_data = {"sub": google_user.email}
         if user_id is not None:

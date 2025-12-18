@@ -322,7 +322,23 @@ class AuthService:
 
         await self.user_repository.reset_failed_attempts(email)
 
-        tokens = self._generate_tokens(email, user_id=final_user.get('id'))
+        # Ensure user has a KMS key (for existing users who don't have one)
+        user_id = final_user.get('id')
+        if user_id:
+            kms_service = self._get_kms_service()
+            if kms_service:
+                try:
+                    existing_key = await kms_service.get_user_key(user_id)
+                    if not existing_key:
+                        await kms_service.create_and_save_user_key(
+                            user_id=user_id,
+                            user_email=email
+                        )
+                        print(f"[Auth] Created KMS key for existing user {user_id}")
+                except Exception as e:
+                    print(f"[Auth] Warning: Failed to create/check KMS key for user {user_id}: {e}")
+
+        tokens = self._generate_tokens(email, user_id=user_id)
 
         return {
             "user": final_user,
