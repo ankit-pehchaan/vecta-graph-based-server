@@ -1,14 +1,6 @@
-"""
-Advice Service.
-
-Main service orchestrating WebSocket communication and the education pipeline.
-Handles message routing, document uploads, and real-time streaming.
-"""
-
 import json
 import asyncio
-import logging
-from typing import AsyncGenerator, Optional, Tuple
+from typing import AsyncGenerator, Optional, Set
 from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -17,6 +9,8 @@ from app.services.education_pipeline import EducationPipeline
 from app.services.profile_extractor import ProfileExtractor
 from app.services.intelligence_service import IntelligenceService
 from app.services.document_agent_service import DocumentAgentService
+from app.services.visualization_service import VisualizationService
+from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.schemas.advice import (
     UserMessage,
     AgentResponse,
@@ -25,6 +19,9 @@ from app.schemas.advice import (
     ErrorMessage,
     IntelligenceSummary,
     DocumentUpload,
+    DocumentConfirm,
+    UIActionsMessage,
+    UIAction,
     DocumentUploadPrompt,
     DocumentConfirm,
     PipelineDebug
@@ -59,20 +56,22 @@ if not logger.handlers:
 
 
 class AdviceService:
-    """Main service orchestrating WebSocket, pipeline, and document processing."""
-
+    """Main service orchestrating WebSocket, agent, and profile extraction."""
+    
     def __init__(
         self,
         agent_service: AgnoAgentService,
         profile_extractor: ProfileExtractor,
         intelligence_service: Optional[IntelligenceService] = None,
         document_agent_service: Optional[DocumentAgentService] = None,
-        db_manager=None
+        visualization_service: Optional[VisualizationService] = None,
+
     ):
         self.agent_service = agent_service
         self.profile_extractor = profile_extractor
         self.intelligence_service = intelligence_service or IntelligenceService()
         self.document_agent_service = document_agent_service
+        self.visualization_service = visualization_service or VisualizationService()
         self.db_manager = db_manager
 
         # Initialize education pipeline if db_manager available
@@ -82,6 +81,58 @@ class AdviceService:
             logger.info("[INIT] EducationPipeline initialized")
 
         self._conversation_contexts: dict[str, str] = {}  # Track conversation context per user
+        # Cross-turn state (process singleton) for gating visualization behavior.
+        self._profile_ready_by_user: dict[str, bool] = {}
+        self._holistic_snapshot_sent: Set[str] = set()
+
+    def _is_visualization_enabled(self) -> bool:
+        if hasattr(settings, "VISUALIZATION_ENABLED") and not getattr(settings, "VISUALIZATION_ENABLED"):
+            return False
+        if hasattr(settings, "enabled_features"):
+            return "visualization" in settings.enabled_features
+        return True
+
+    def _is_profile_ready_for_post_discovery(self, profile_data: Optional[dict]) -> bool:
+        """
+        Heuristic "discovery complete" gate.
+        We treat discovery as complete once we have:
+        - at least one goal, and
+        - at least some cashflow signal (income/monthly_income/expenses), and
+        - at least some balance sheet signal (assets/liabilities/super)
+        """
+        if not profile_data:
+            return False
+
+        goals = profile_data.get("goals") or []
+        has_goals = len(goals) > 0
+
+        has_cashflow = any(
+            profile_data.get(k) is not None
+            for k in ("income", "monthly_income", "expenses")
+        )
+
+        has_balance_sheet = any(
+            (profile_data.get(k) or [])
+            for k in ("assets", "liabilities", "superannuation")
+        )
+
+        return bool(has_goals and has_cashflow and has_balance_sheet)
+
+    def _looks_like_explicit_viz_request(self, text: str) -> bool:
+        t = (text or "").lower()
+        triggers = (
+            "visual", "visualise", "visualize", "chart", "graph", "plot",
+            "compare", "comparison", "breakdown", "snapshot", "allocation",
+        )
+        return any(w in t for w in triggers)
+
+    def _should_consider_contextual_viz(self, user_text: str, agent_text: str, profile_ready: bool) -> bool:
+        """
+        Prevent "viz in discovery" and avoid calling the viz-intent LLM on every turn.
+
+        - If profile is not ready (discovery), only consider viz if user explicitly asks for it
+          or asks a numeric scenario question (e.g., mortgage/loan comparison).
+        - If profile is ready, consider viz only when the turn is numeric/scenario-ish.
 
         logger.info("[INIT] AdviceService initialized")
 
@@ -180,6 +231,43 @@ class AdviceService:
 
     async def send_message(self, websocket: WebSocket, message: dict) -> bool:
         """
+        if not self._is_visualization_enabled():
+            return False
+
+        u = (user_text or "").lower()
+        a = (agent_text or "").lower()
+
+        explicit = self._looks_like_explicit_viz_request(user_text)
+
+        numeric_topics = (
+            "mortgage", "loan", "amort", "repayment", "interest",
+            "offset", "refinance", "term", "rate",
+            "projection", "scenario", "what if", "vs ", " versus ",
+        )
+        topic = any(w in u for w in numeric_topics) or any(w in a for w in ("amort", "repayment", "interest"))
+
+        if not profile_ready:
+            return bool(explicit or topic)
+        return bool(explicit or topic)
+
+    async def _fetch_profile_data(self, username: str) -> Optional[dict]:
+        """Load the latest profile snapshot from the DB (fresh session)."""
+        try:
+            async for session in self.profile_extractor.db_manager.get_session():
+                repo = FinancialProfileRepository(session)
+                return await repo.get_by_username(username)
+        except Exception:
+            return None
+
+    async def send_message(
+        self,
+        websocket: WebSocket,
+        message: dict,
+        conn_state: Optional[ConnectionState] = None
+    ) -> bool:
+        """
+        Send JSON message via WebSocket with serialization lock.
+        
         Send JSON message via WebSocket.
 
         Returns:
@@ -196,7 +284,7 @@ class AdviceService:
             return True
         except (WebSocketDisconnect, RuntimeError, Exception) as e:
             # WebSocket disconnected or closed - this is normal
-            logger.warning(f"[WS] Send failed: {e}")
+            print(f"[WS] Send failed: {e}")
             return False
 
     def _is_websocket_connected(self, websocket: WebSocket) -> bool:
@@ -213,14 +301,13 @@ class AdviceService:
             return True
         except Exception:
             return False
-
+    
     async def send_greeting(self, websocket: WebSocket, username: str) -> None:
         """Send greeting message to user."""
         try:
-            logger.info(f"[GREETING] Sending greeting to: {username}")
             greeting_text = await self.agent_service.generate_greeting(username)
             is_first_time = await self.agent_service.is_first_time_user(username)
-
+            
             greeting = Greeting(
                 message=greeting_text,
                 is_first_time=is_first_time,
@@ -416,7 +503,7 @@ class AdviceService:
             )
 
         except Exception as e:
-            logger.error(f"[PROCESS] Error processing message: {e}")
+            print(f"Error processing message: {e}")
             import traceback
             traceback.print_exc()
             error_msg = f"Error processing message: {str(e)}"
@@ -425,7 +512,7 @@ class AdviceService:
                 code="PROCESSING_ERROR",
                 timestamp=datetime.now(timezone.utc).isoformat()
             ).model_dump()
-
+    
     async def _extract_and_send_profile_update(
         self,
         websocket: WebSocket,
@@ -449,7 +536,7 @@ class AdviceService:
                 if self._is_websocket_connected(websocket):
                     profile_data = update_result["profile"]
                     profile = FinancialProfile(**profile_data)
-
+                    
                     profile_update = ProfileUpdate(
                         profile=profile,
                         changes=update_result.get("changes"),
@@ -667,7 +754,6 @@ class AdviceService:
                     await websocket.close()
             except Exception:
                 pass
-            logger.info(f"[WS] Connection closed for: {username}")
 
     async def _process_document_upload(
         self,

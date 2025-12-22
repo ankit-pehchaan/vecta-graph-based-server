@@ -127,3 +127,4 @@ class InMemoryFinancialProfileRepository(IFinancialProfileRepository):
     async def get_by_username(self, username: str) -> Optional[dict]:
         """Legacy method - username is now email."""
         return await self.get_by_email(username)
+

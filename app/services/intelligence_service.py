@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, AsyncGenerator
 from pydantic import BaseModel
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from agno.db.sqlite import SqliteDb
+from app.services.agno_db import agno_db
 from app.core.config import settings
 
 
@@ -50,7 +50,7 @@ Analyze the conversation and profile to identify:
 - Gaps needing attention
 
 Keep it short and concise. No rich text formatting.""",
-            db=SqliteDb(db_file=db_file),
+            db=agno_db(db_file),
             user_id=f"{username}_intelligence",
             markdown=False,
             debug_mode=False

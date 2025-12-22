@@ -61,8 +61,10 @@ class DocumentUploadResponse(BaseModel):
     message: Optional[str] = None
 
 
-# Singleton S3 service instance
+# Singleton service instances - created once per process for efficiency
+# Agent caches are maintained internally by each service
 _s3_service: Optional[S3Service] = None
+_advice_service: Optional[AdviceService] = None
 
 
 def _get_s3_service() -> S3Service:
@@ -75,21 +77,25 @@ def _get_s3_service() -> S3Service:
 
 def _get_advice_service() -> AdviceService:
     """
-    Create an AdviceService with db_manager for fresh sessions per operation.
-
-    Each database operation creates its own session to ensure transaction isolation
-    and prevent "InFailedSQLTransactionError" issues in long-lived WebSocket connections.
+    Get or create singleton AdviceService.
+    
+    The service uses db_manager for fresh sessions per operation, ensuring
+    transaction isolation in long-lived WebSocket connections.
+    Agent caches (per user) are maintained internally by each sub-service.
     """
-    agent_service = AgnoAgentService(db_manager=db_manager)
-    profile_extractor = ProfileExtractor(db_manager=db_manager)
-    intelligence_service = IntelligenceService()
-    document_agent_service = DocumentAgentService(db_manager=db_manager)
-    return AdviceService(
-        agent_service=agent_service,
-        profile_extractor=profile_extractor,
-        intelligence_service=intelligence_service,
-        document_agent_service=document_agent_service
-    )
+    global _advice_service
+    if _advice_service is None:
+        agent_service = AgnoAgentService(db_manager=db_manager)
+        profile_extractor = ProfileExtractor(db_manager=db_manager)
+        intelligence_service = IntelligenceService()
+        document_agent_service = DocumentAgentService(db_manager=db_manager)
+        _advice_service = AdviceService(
+            agent_service=agent_service,
+            profile_extractor=profile_extractor,
+            intelligence_service=intelligence_service,
+            document_agent_service=document_agent_service
+        )
+    return _advice_service
 
 
 @router.get("/profile", response_model=ProfileResponse)
@@ -302,3 +308,4 @@ async def advice_websocket(websocket: WebSocket):
                 await websocket.close()
             except Exception:
                 pass
+
