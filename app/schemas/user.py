@@ -20,6 +20,7 @@ class UserData(BaseModel):
     email: str
     name: str | None = None
     account_status: str | None = None
+    features: list[str] | None = None  # Enabled feature flags
 
 
 class TokenResponse(BaseModel):

@@ -39,3 +39,4 @@ def downgrade() -> None:
     # Remove cash_balance column
     op.drop_column('financial_profiles', 'cash_balance')
 
+

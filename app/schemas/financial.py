@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, computed_field
 from typing import Optional, List
 from datetime import datetime
 
@@ -98,26 +98,31 @@ class FinancialProfile(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+    @computed_field
     @property
     def total_assets(self) -> float:
         """Calculate total asset value."""
         return sum(a.value or 0 for a in self.assets)
     
+    @computed_field
     @property
     def total_liabilities(self) -> float:
         """Calculate total liability value."""
         return sum(l.amount or 0 for l in self.liabilities)
     
+    @computed_field
     @property
     def total_superannuation(self) -> float:
         """Calculate total superannuation balance."""
         return sum(s.balance or 0 for s in self.superannuation)
     
+    @computed_field
     @property
     def net_worth(self) -> float:
         """Calculate net worth (assets + super - liabilities)."""
         return self.total_assets + self.total_superannuation - self.total_liabilities
     
+    @computed_field
     @property
     def cash_balance(self) -> float:
         """Get total cash/savings from assets."""
@@ -126,3 +131,4 @@ class FinancialProfile(BaseModel):
             for a in self.assets 
             if a.asset_type in ('cash', 'savings')
         )
+
