@@ -1,10 +1,19 @@
+"""
+Advice Service.
+
+Main service orchestrating WebSocket communication and the education pipeline.
+Handles message routing, document uploads, and real-time streaming.
+"""
+
 import json
 import asyncio
-from typing import AsyncGenerator, Optional
+import logging
+from typing import AsyncGenerator, Optional, Tuple
 from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 from app.services.agno_agent_service import AgnoAgentService
+from app.services.education_pipeline import EducationPipeline
 from app.services.profile_extractor import ProfileExtractor
 from app.services.intelligence_service import IntelligenceService
 from app.services.document_agent_service import DocumentAgentService
@@ -16,48 +25,180 @@ from app.schemas.advice import (
     ErrorMessage,
     IntelligenceSummary,
     DocumentUpload,
-    DocumentConfirm
+    DocumentUploadPrompt,
+    DocumentConfirm,
+    PipelineDebug
 )
 from app.schemas.financial import FinancialProfile
+from app.core.prompts import (
+    DOCUMENT_UPLOAD_INTENT_KEYWORDS,
+    DOCUMENT_CONTEXT_KEYWORDS,
+    DOCUMENT_UPLOAD_EXCLUSIONS,
+    DOCUMENT_TYPE_SUGGESTIONS,
+    DOCUMENT_UPLOAD_RESPONSE_GENERIC,
+    DOCUMENT_UPLOAD_RESPONSE_SPECIFIC,
+    DOCUMENT_TYPE_DISPLAY_NAMES,
+    DOCUMENT_CONTINUATION_WITH_DATA,
+    DOCUMENT_CONTINUATION_NO_DATA,
+    DOCUMENT_REJECTION_CONTINUATION,
+)
+
+# Configure logger
+logger = logging.getLogger("advice_service")
+logger.setLevel(logging.DEBUG)
+
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        '[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 
 class AdviceService:
-    """Main service orchestrating WebSocket, agent, and profile extraction."""
-    
+    """Main service orchestrating WebSocket, pipeline, and document processing."""
+
     def __init__(
         self,
         agent_service: AgnoAgentService,
         profile_extractor: ProfileExtractor,
         intelligence_service: Optional[IntelligenceService] = None,
-        document_agent_service: Optional[DocumentAgentService] = None
+        document_agent_service: Optional[DocumentAgentService] = None,
+        db_manager=None
     ):
         self.agent_service = agent_service
         self.profile_extractor = profile_extractor
         self.intelligence_service = intelligence_service or IntelligenceService()
         self.document_agent_service = document_agent_service
+        self.db_manager = db_manager
+
+        # Initialize education pipeline if db_manager available
+        self.education_pipeline = None
+        if db_manager:
+            self.education_pipeline = EducationPipeline(db_manager)
+            logger.info("[INIT] EducationPipeline initialized")
+
         self._conversation_contexts: dict[str, str] = {}  # Track conversation context per user
-    
+
+        logger.info("[INIT] AdviceService initialized")
+
+    def _detect_document_upload_intent(self, message: str) -> Tuple[bool, list[str]]:
+        """
+        Detect if user wants to upload a document and suggest document types.
+
+        Uses a multi-step detection:
+        1. Check for exclusion phrases (false positives like "summarize my situation")
+        2. Check for strong intent keywords (upload, attach, etc.)
+        3. For ambiguous keywords (summarize, review), require document context
+
+        Args:
+            message: User's message text
+
+        Returns:
+            Tuple of (has_intent, suggested_document_types)
+        """
+        message_lower = message.lower()
+        logger.debug(f"[DOC_INTENT] Checking message: {message[:50]}...")
+
+        # Step 1: Check for exclusions first (false positive prevention)
+        for exclusion in DOCUMENT_UPLOAD_EXCLUSIONS:
+            if exclusion in message_lower:
+                logger.debug(f"[DOC_INTENT] Excluded by phrase: {exclusion}")
+                return False, []
+
+        # Step 2: Check for strong intent keywords (always trigger)
+        strong_intent_keywords = [
+            "upload", "attach", "send a file", "send file", "send my file",
+            "share a document", "share document", "share my document",
+            "send a document", "send document", "send my document",
+            "i have a pdf", "i have a document", "i have a file",
+            "got a pdf", "got a document", "got a file",
+            "can i upload", "can i attach", "can i send you",
+            "let me upload", "let me attach", "let me send",
+        ]
+
+        has_strong_intent = any(
+            keyword in message_lower
+            for keyword in strong_intent_keywords
+        )
+
+        # Step 3: Check for document type mentions (these are strong signals)
+        has_doc_type_mention = any(
+            doc_type in message_lower
+            for doc_type in ["bank statement", "tax return", "payslip", "pay slip", "investment statement"]
+        )
+
+        # Step 4: For weaker intent words, require document context
+        weak_intent_keywords = [
+            "can you summarize", "can you summarise", "can you analyze", "can you analyse",
+            "can you review", "can you check", "can you read", "can you look at",
+            "can you process", "can you extract", "could you summarize", "could you review",
+            "summarize my", "summarise my", "analyze my", "analyse my",
+            "review my", "check my", "look at my", "read my",
+        ]
+
+        has_weak_intent = any(
+            keyword in message_lower
+            for keyword in weak_intent_keywords
+        )
+
+        has_document_context = any(
+            context_word in message_lower
+            for context_word in DOCUMENT_CONTEXT_KEYWORDS
+        )
+
+        # Determine if we have valid upload intent
+        has_intent = has_strong_intent or has_doc_type_mention or (has_weak_intent and has_document_context)
+
+        if not has_intent:
+            logger.debug("[DOC_INTENT] No document upload intent detected")
+            return False, []
+
+        # Determine suggested document types based on context
+        suggested_types = set()
+        for keyword, doc_types in DOCUMENT_TYPE_SUGGESTIONS.items():
+            if keyword in message_lower:
+                suggested_types.update(doc_types)
+
+        # Default to all types if no specific type detected
+        if not suggested_types:
+            suggested_types = {"bank_statement", "tax_return", "investment_statement", "payslip"}
+
+        logger.info(f"[DOC_INTENT] Document upload intent detected. Suggested types: {suggested_types}")
+        return True, list(suggested_types)
+
+    def _get_document_upload_response(self, suggested_types: list[str]) -> str:
+        """Generate appropriate response for document upload request."""
+        if len(suggested_types) == 1:
+            doc_type = suggested_types[0]
+            display_name = DOCUMENT_TYPE_DISPLAY_NAMES.get(doc_type, doc_type)
+            return DOCUMENT_UPLOAD_RESPONSE_SPECIFIC.format(document_type=display_name)
+        return DOCUMENT_UPLOAD_RESPONSE_GENERIC
+
     async def send_message(self, websocket: WebSocket, message: dict) -> bool:
         """
         Send JSON message via WebSocket.
-        
+
         Returns:
             bool: True if sent successfully, False if connection closed/error
         """
         try:
             # Check connection state before sending
             if not self._is_websocket_connected(websocket):
-                print(f"[WS] Cannot send - not connected")
+                logger.warning("[WS] Cannot send - not connected")
                 return False
-            
+
             await websocket.send_json(message)
-            print(f"[WS] Sent message type: {message.get('type')}")
+            logger.debug(f"[WS] Sent message type: {message.get('type')}")
             return True
         except (WebSocketDisconnect, RuntimeError, Exception) as e:
             # WebSocket disconnected or closed - this is normal
-            print(f"[WS] Send failed: {e}")
+            logger.warning(f"[WS] Send failed: {e}")
             return False
-    
+
     def _is_websocket_connected(self, websocket: WebSocket) -> bool:
         """Safely check if WebSocket is connected."""
         try:
@@ -72,27 +213,26 @@ class AdviceService:
             return True
         except Exception:
             return False
-    
+
     async def send_greeting(self, websocket: WebSocket, username: str) -> None:
         """Send greeting message to user."""
         try:
+            logger.info(f"[GREETING] Sending greeting to: {username}")
             greeting_text = await self.agent_service.generate_greeting(username)
             is_first_time = await self.agent_service.is_first_time_user(username)
-            
+
             greeting = Greeting(
                 message=greeting_text,
                 is_first_time=is_first_time,
                 timestamp=datetime.now(timezone.utc).isoformat()
             )
-            
+
             # Try to send greeting, but don't fail if connection is closed
             if not await self.send_message(websocket, greeting.model_dump()):
-                # Connection was closed, this is normal if client disconnected
-                pass
+                logger.debug("[GREETING] Connection closed before greeting could be sent")
         except Exception as e:
-            # Don't log greeting errors as they're usually due to client disconnection
-            pass
-    
+            logger.error(f"[GREETING] Error: {e}")
+
     async def send_error(self, websocket: WebSocket, message: str, code: str = None) -> None:
         """Send error message via WebSocket."""
         error = ErrorMessage(
@@ -101,7 +241,7 @@ class AdviceService:
             timestamp=datetime.now(timezone.utc).isoformat()
         )
         await self.send_message(websocket, error.model_dump())
-    
+
     async def _stream_agent_response(
         self,
         agent,
@@ -109,61 +249,43 @@ class AdviceService:
     ) -> AsyncGenerator[str, None]:
         """
         Stream agent response using Agno's native streaming.
-        
+
         Uses agent.arun() with streaming support from Agno framework.
-        
+
         Yields:
             Text chunks as they're generated token-by-token
         """
         try:
             # Use Agno's native streaming via arun with stream=True
-            # Agno agents support streaming through their run methods
             if hasattr(agent, 'arun'):
-                # Try to use streaming if available
-                if hasattr(agent, 'run_stream') or hasattr(agent.model, 'stream'):
-                    # Use agent's streaming method if available
-                    response = await agent.arun(user_message)
-                    # For now, use arun and stream the response
-                    # Agno's arun returns a response object with content
-                    full_response = response.content if hasattr(response, 'content') else str(response)
-                    
-                    # Stream response in chunks for smooth UX
-                    chunk_size = 5  # Small chunks for smooth streaming
-                    for i in range(0, len(full_response), chunk_size):
-                        chunk = full_response[i:i + chunk_size]
-                        if chunk:
-                            yield chunk
-                            await asyncio.sleep(0.01)  # Small delay for smooth streaming
-                else:
-                    # Standard async run
-                    response = await agent.arun(user_message)
-                    full_response = response.content if hasattr(response, 'content') else str(response)
-                    
-                    # Stream in chunks
-                    chunk_size = 5
-                    for i in range(0, len(full_response), chunk_size):
-                        chunk = full_response[i:i + chunk_size]
-                        if chunk:
-                            yield chunk
-                            await asyncio.sleep(0.01)
+                response = await agent.arun(user_message)
+                full_response = response.content if hasattr(response, 'content') else str(response)
+
+                # Stream response in chunks for smooth UX
+                chunk_size = 5  # Small chunks for smooth streaming
+                for i in range(0, len(full_response), chunk_size):
+                    chunk = full_response[i:i + chunk_size]
+                    if chunk:
+                        yield chunk
+                        await asyncio.sleep(0.01)  # Small delay for smooth streaming
             else:
                 # Fallback: sync run
                 response = agent.run(user_message)
                 full_response = response.content if hasattr(response, 'content') else str(response)
-                
+
                 chunk_size = 5
                 for i in range(0, len(full_response), chunk_size):
                     chunk = full_response[i:i + chunk_size]
                     if chunk:
                         yield chunk
                         await asyncio.sleep(0.01)
-        
+
         except Exception as e:
-            print(f"Error in agent streaming: {e}")
+            logger.error(f"[STREAM] Error in agent streaming: {e}")
             import traceback
             traceback.print_exc()
             yield f"Error: {str(e)}"
-    
+
     async def process_user_message(
         self,
         websocket: WebSocket,
@@ -171,60 +293,130 @@ class AdviceService:
         user_message: str
     ) -> AsyncGenerator[dict, None]:
         """
-        Process user message and stream agent response with real-time updates.
-        
+        Process user message through the education pipeline and stream response.
+
+        Uses the full 6-stage pipeline:
+        1. Intent Classification
+        2. Data Extraction
+        3. QA/Validation
+        4. Strategy/Routing
+        5. Response Generation (Jamie)
+        6. Output QA
+
         Yields:
-            Agent response chunks, profile updates, and intelligence summaries
+            Agent response chunks, profile updates, and pipeline debug info
         """
+        logger.info(f"[PROCESS] Processing message from {username}: {user_message[:50]}...")
+
         try:
             # Update conversation context
             if username not in self._conversation_contexts:
                 self._conversation_contexts[username] = ""
-            
+
             self._conversation_contexts[username] += f"\nUser: {user_message}\n"
-            
-            # Get agent for user (this should be quick - cached)
-            agent = await self.agent_service.get_agent(username)
-            
-            # Stream agent response
-            full_response = ""
-            
-            async for chunk in self._stream_agent_response(agent, user_message):
-                full_response += chunk
-                
-                # Send agent response chunk immediately
-                agent_response = AgentResponse(
-                    content=chunk,
-                    is_complete=False,
+
+            # Use education pipeline if available
+            if self.education_pipeline:
+                logger.info("[PROCESS] Using EducationPipeline for processing")
+
+                # Process through pipeline
+                pipeline_result = await self.education_pipeline.process_message(
+                    username,
+                    user_message
+                )
+
+                full_response = pipeline_result["response"]
+
+                # Stream the response
+                chunk_size = 5
+                for i in range(0, len(full_response), chunk_size):
+                    chunk = full_response[i:i + chunk_size]
+                    if chunk:
+                        agent_response = AgentResponse(
+                            content=chunk,
+                            is_complete=False,
+                            timestamp=datetime.now(timezone.utc).isoformat()
+                        )
+                        yield agent_response.model_dump()
+                        await asyncio.sleep(0.01)
+
+                # Mark final chunk as complete
+                final_response = AgentResponse(
+                    content="",
+                    is_complete=True,
                     timestamp=datetime.now(timezone.utc).isoformat()
                 )
-                yield agent_response.model_dump()
-            
-            # Mark final chunk as complete
-            final_response = AgentResponse(
-                content="",
-                is_complete=True,
-                timestamp=datetime.now(timezone.utc).isoformat()
-            )
-            yield final_response.model_dump()
-            
-            # Update conversation context with agent response
-            self._conversation_contexts[username] += f"Agent: {full_response}\n"
-            
-            # Run profile extraction in background - don't block the main response flow
-            # Combine user message and agent response for extraction
-            combined_text = f"User: {user_message}\nAgent: {full_response}"
-            asyncio.create_task(
-                self._extract_and_send_profile_update(websocket, username, combined_text)
-            )
-            
+                yield final_response.model_dump()
+
+                # Send pipeline debug info
+                debug_info = PipelineDebug(
+                    intent=pipeline_result["intent"],
+                    validation=pipeline_result["validation"],
+                    strategy=pipeline_result["strategy"],
+                    qa_result=pipeline_result["qa_result"],
+                    duration_seconds=pipeline_result["duration_seconds"],
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+                yield debug_info.model_dump()
+
+                # Update conversation context with agent response
+                self._conversation_contexts[username] += f"Jamie: {full_response}\n"
+
+                # Profile update is handled by pipeline stage 2
+                # Send profile update if extraction occurred
+                if pipeline_result.get("extracted_data"):
+                    extracted = pipeline_result["extracted_data"]
+                    if extracted.get("profile"):
+                        profile_data = extracted["profile"]
+                        profile = FinancialProfile(**profile_data)
+
+                        profile_update = ProfileUpdate(
+                            profile=profile,
+                            changes=extracted.get("changes"),
+                            timestamp=datetime.now(timezone.utc).isoformat()
+                        )
+                        yield profile_update.model_dump(mode='json')
+
+            else:
+                # Fallback to direct agent if pipeline not available
+                logger.warning("[PROCESS] Pipeline not available, using direct agent")
+                agent = await self.agent_service.get_agent(username)
+
+                full_response = ""
+                async for chunk in self._stream_agent_response(agent, user_message):
+                    full_response += chunk
+
+                    agent_response = AgentResponse(
+                        content=chunk,
+                        is_complete=False,
+                        timestamp=datetime.now(timezone.utc).isoformat()
+                    )
+                    yield agent_response.model_dump()
+
+                # Mark final chunk as complete
+                final_response = AgentResponse(
+                    content="",
+                    is_complete=True,
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+                yield final_response.model_dump()
+
+                # Update conversation context with agent response
+                self._conversation_contexts[username] += f"Jamie: {full_response}\n"
+
+                # Run profile extraction in background
+                combined_text = f"User: {user_message}\nJamie: {full_response}"
+                asyncio.create_task(
+                    self._extract_and_send_profile_update(websocket, username, combined_text)
+                )
+
             # Stream intelligence updates in background
             asyncio.create_task(
                 self._stream_intelligence_updates(websocket, username)
             )
-        
+
         except Exception as e:
-            print(f"Error processing message: {e}")
+            logger.error(f"[PROCESS] Error processing message: {e}")
             import traceback
             traceback.print_exc()
             error_msg = f"Error processing message: {str(e)}"
@@ -233,7 +425,7 @@ class AdviceService:
                 code="PROCESSING_ERROR",
                 timestamp=datetime.now(timezone.utc).isoformat()
             ).model_dump()
-    
+
     async def _extract_and_send_profile_update(
         self,
         websocket: WebSocket,
@@ -243,39 +435,37 @@ class AdviceService:
         """Extract profile updates and send them via WebSocket (background task)."""
         try:
             if not self._is_websocket_connected(websocket):
-                print(f"[Profile] WebSocket not connected for {username}, skipping extraction")
+                logger.debug(f"[PROFILE] WebSocket not connected for {username}, skipping extraction")
                 return
-            
-            print(f"[Profile] Starting extraction for {username}")
+
+            logger.debug(f"[PROFILE] Starting extraction for {username}")
             update_result = await self.profile_extractor.extract_and_update_profile(
                 username,
                 conversation_text
             )
-            
+
             if update_result:
-                print(f"[Profile] Extraction result: changes={update_result.get('changes')}")
+                logger.info(f"[PROFILE] Extraction result: changes={update_result.get('changes')}")
                 if self._is_websocket_connected(websocket):
                     profile_data = update_result["profile"]
                     profile = FinancialProfile(**profile_data)
-                    
+
                     profile_update = ProfileUpdate(
                         profile=profile,
                         changes=update_result.get("changes"),
                         timestamp=datetime.now(timezone.utc).isoformat()
                     )
-                    print(f"[Profile] Sending profile update to {username}")
-                    # Use mode='json' to properly serialize datetime objects
+                    logger.debug(f"[PROFILE] Sending profile update to {username}")
                     message_dict = profile_update.model_dump(mode='json')
-                    print(f"[Profile] Message type: {message_dict.get('type')}, goals count: {len(message_dict.get('profile', {}).get('goals', []))}")
                     success = await self.send_message(websocket, message_dict)
-                    print(f"[Profile] Send result: {success}")
+                    logger.debug(f"[PROFILE] Send result: {success}")
             else:
-                print(f"[Profile] No extraction result for {username}")
+                logger.debug(f"[PROFILE] No extraction result for {username}")
         except Exception as e:
-            print(f"Profile extraction error (background): {e}")
+            logger.error(f"[PROFILE] Extraction error (background): {e}")
             import traceback
             traceback.print_exc()
-    
+
     async def _stream_intelligence_updates(
         self,
         websocket: WebSocket,
@@ -284,10 +474,10 @@ class AdviceService:
         """Stream intelligence updates in background."""
         try:
             conversation_context = self._conversation_contexts.get(username, "")
-            
+
             # Get recent context (last 2000 chars to avoid token limits)
             recent_context = conversation_context[-2000:] if len(conversation_context) > 2000 else conversation_context
-            
+
             # Check connection before expensive generation
             if not self._is_websocket_connected(websocket):
                 return
@@ -307,7 +497,7 @@ class AdviceService:
             ):
                 if not self._is_websocket_connected(websocket):
                     return
-                
+
                 intelligence_msg = IntelligenceSummary(
                     content=chunk,
                     is_complete=False,
@@ -315,7 +505,7 @@ class AdviceService:
                 )
                 if not await self.send_message(websocket, intelligence_msg.model_dump()):
                     return
-            
+
             # Send final complete message
             if self._is_websocket_connected(websocket):
                 final_msg = IntelligenceSummary(
@@ -324,37 +514,40 @@ class AdviceService:
                     timestamp=datetime.now(timezone.utc).isoformat()
                 )
                 await self.send_message(websocket, final_msg.model_dump())
-        
+
         except Exception as e:
-            print(f"Error streaming intelligence updates: {e}")
-    
+            logger.error(f"[INTELLIGENCE] Error streaming updates: {e}")
+
     async def handle_websocket_connection(self, websocket: WebSocket, username: str) -> None:
         """
         Handle WebSocket connection for a user.
-        
+
         Args:
             websocket: WebSocket connection
             username: Authenticated username
         """
+        logger.info(f"[WS] New connection for user: {username}")
+
         try:
             # Send initial greeting
             await self.send_greeting(websocket, username)
-            
+
             # Main message loop
             while self._is_websocket_connected(websocket):
                 try:
                     # Receive message from client with proper exception handling
                     try:
                         data = await websocket.receive_text()
+                        logger.debug(f"[WS] Received from {username}: {data[:100]}...")
                     except WebSocketDisconnect:
-                        # Client disconnected normally
+                        logger.info(f"[WS] Client disconnected: {username}")
                         break
                     except RuntimeError as e:
-                        # Connection closed
                         if "disconnect" in str(e).lower() or "closed" in str(e).lower():
+                            logger.info(f"[WS] Connection closed: {username}")
                             break
                         raise
-                    
+
                     # Parse user message
                     try:
                         message_data = json.loads(data)
@@ -363,6 +556,8 @@ class AdviceService:
                         # If not JSON, treat as plain text user message
                         message_data = {"content": data}
                         message_type = "user_message"
+
+                    logger.debug(f"[WS] Message type: {message_type}")
 
                     # Handle different message types
                     try:
@@ -408,41 +603,59 @@ class AdviceService:
                             # Handle regular user message
                             user_text = message_data.get("content", data)
 
-                            async for response_chunk in self.process_user_message(
-                                websocket,
-                                username,
-                                user_text
-                            ):
-                                # Check connection before sending each chunk
-                                if not self._is_websocket_connected(websocket):
-                                    break
+                            # Check for document upload intent first
+                            has_upload_intent, suggested_types = self._detect_document_upload_intent(user_text)
 
-                                if not await self.send_message(websocket, response_chunk):
-                                    break
+                            if has_upload_intent and self.document_agent_service:
+                                logger.info(f"[WS] Document upload intent detected for {username}")
+                                # Send document upload prompt to trigger widget
+                                response_message = self._get_document_upload_response(suggested_types)
+                                upload_prompt = DocumentUploadPrompt(
+                                    message=response_message,
+                                    suggested_types=suggested_types,
+                                    timestamp=datetime.now(timezone.utc).isoformat()
+                                )
+                                await self.send_message(websocket, upload_prompt.model_dump())
+                            else:
+                                # Normal message processing through pipeline
+                                logger.info(f"[WS] Processing message through pipeline for {username}")
+                                async for response_chunk in self.process_user_message(
+                                    websocket,
+                                    username,
+                                    user_text
+                                ):
+                                    # Check connection before sending each chunk
+                                    if not self._is_websocket_connected(websocket):
+                                        break
+
+                                    if not await self.send_message(websocket, response_chunk):
+                                        break
 
                     except WebSocketDisconnect:
                         break
                     except Exception as stream_error:
+                        logger.error(f"[WS] Stream error: {stream_error}")
                         # If streaming fails, try to send error and continue
                         if self._is_websocket_connected(websocket):
                             error_msg = f"Error processing message: {str(stream_error)}"
                             await self.send_error(websocket, error_msg, "STREAMING_ERROR")
-                
+
                 except WebSocketDisconnect:
-                    # Client disconnected
+                    logger.info(f"[WS] Client disconnected: {username}")
                     break
                 except Exception as e:
+                    logger.error(f"[WS] Error handling message: {e}")
                     # Try to send error if still connected
                     if self._is_websocket_connected(websocket):
                         error_msg = f"Error handling message: {str(e)}"
                         await self.send_error(websocket, error_msg)
                     else:
                         break
-        
+
         except WebSocketDisconnect:
-            # Client disconnected - normal exit
-            pass
+            logger.info(f"[WS] Client disconnected: {username}")
         except Exception as e:
+            logger.error(f"[WS] Connection error: {e}")
             # Try to send error if still connected
             if self._is_websocket_connected(websocket):
                 error_msg = f"WebSocket connection error: {str(e)}"
@@ -454,6 +667,7 @@ class AdviceService:
                     await websocket.close()
             except Exception:
                 pass
+            logger.info(f"[WS] Connection closed for: {username}")
 
     async def _process_document_upload(
         self,
@@ -470,10 +684,10 @@ class AdviceService:
         """
         try:
             if not self._is_websocket_connected(websocket):
-                print(f"[Document] WebSocket not connected for {username}, skipping processing")
+                logger.debug(f"[DOC] WebSocket not connected for {username}, skipping processing")
                 return
 
-            print(f"[Document] Starting document processing for {username}: {filename}")
+            logger.info(f"[DOC] Starting document processing for {username}: {filename}")
 
             async for update in self.document_agent_service.process_document(
                 username,
@@ -482,16 +696,16 @@ class AdviceService:
                 filename
             ):
                 if not self._is_websocket_connected(websocket):
-                    print(f"[Document] WebSocket disconnected during processing for {username}")
+                    logger.warning(f"[DOC] WebSocket disconnected during processing for {username}")
                     return
 
                 if not await self.send_message(websocket, update):
                     return
 
-            print(f"[Document] Document processing complete for {username}: {filename}")
+            logger.info(f"[DOC] Document processing complete for {username}: {filename}")
 
         except Exception as e:
-            print(f"[Document] Error processing document: {e}")
+            logger.error(f"[DOC] Error processing document: {e}")
             import traceback
             traceback.print_exc()
 
@@ -511,10 +725,11 @@ class AdviceService:
         """
         Handle user confirmation of extracted document data.
 
-        If confirmed, updates the financial profile and sends a profile update.
+        If confirmed, updates the financial profile, sends a profile update,
+        and continues the discovery conversation.
         """
         try:
-            print(f"[Document] Handling confirmation for extraction {confirmation.extraction_id}")
+            logger.info(f"[DOC] Handling confirmation for extraction {confirmation.extraction_id}")
 
             result = await self.document_agent_service.confirm_extraction(
                 username,
@@ -536,13 +751,40 @@ class AdviceService:
 
                 message_dict = profile_update.model_dump(mode='json')
                 await self.send_message(websocket, message_dict)
-                print(f"[Document] Profile updated for {username} after document confirmation")
+                logger.info(f"[DOC] Profile updated for {username} after document confirmation")
+
+                # Continue conversation - agent acknowledges document and continues discovery
+                continuation_message = self._build_document_continuation_prompt(
+                    result.get("document_type", "document"),
+                    result.get("changes", {})
+                )
+
+                # Let agent continue the conversation
+                async for response_chunk in self.process_user_message(
+                    websocket,
+                    username,
+                    continuation_message
+                ):
+                    if not self._is_websocket_connected(websocket):
+                        break
+                    if not await self.send_message(websocket, response_chunk):
+                        break
 
             elif not confirmation.confirmed:
-                print(f"[Document] Extraction {confirmation.extraction_id} was rejected by user")
+                logger.info(f"[DOC] Extraction {confirmation.extraction_id} was rejected by user")
+                # Send a message acknowledging rejection and continuing
+                async for response_chunk in self.process_user_message(
+                    websocket,
+                    username,
+                    DOCUMENT_REJECTION_CONTINUATION
+                ):
+                    if not self._is_websocket_connected(websocket):
+                        break
+                    if not await self.send_message(websocket, response_chunk):
+                        break
 
         except Exception as e:
-            print(f"[Document] Error handling document confirmation: {e}")
+            logger.error(f"[DOC] Error handling document confirmation: {e}")
             import traceback
             traceback.print_exc()
 
@@ -552,3 +794,34 @@ class AdviceService:
                     f"Failed to process confirmation: {str(e)}",
                     "DOCUMENT_CONFIRM_ERROR"
                 )
+
+    def _build_document_continuation_prompt(self, document_type: str, changes: dict) -> str:
+        """
+        Build a prompt for the agent to continue conversation after document processing.
+
+        This is an internal message to guide the agent, not shown to user directly.
+        """
+        extracted_items = []
+
+        if changes.get("income"):
+            extracted_items.append(f"income of ${changes['income']:,.0f}")
+        if changes.get("assets"):
+            asset_count = len(changes["assets"])
+            extracted_items.append(f"{asset_count} asset(s)")
+        if changes.get("liabilities"):
+            liability_count = len(changes["liabilities"])
+            extracted_items.append(f"{liability_count} liability(ies)")
+        if changes.get("superannuation"):
+            super_count = len(changes["superannuation"])
+            extracted_items.append(f"{super_count} superannuation account(s)")
+
+        doc_display_name = DOCUMENT_TYPE_DISPLAY_NAMES.get(document_type, document_type)
+
+        if extracted_items:
+            summary = ", ".join(extracted_items)
+            return DOCUMENT_CONTINUATION_WITH_DATA.format(
+                document_type=doc_display_name,
+                summary=summary
+            )
+        else:
+            return DOCUMENT_CONTINUATION_NO_DATA.format(document_type=doc_display_name)
