@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from agno.db.sqlite import SqliteDb
+from app.services.agno_db import agno_db
 from app.utils.document_parser import DocumentParser
 from app.schemas.advice import DocumentProcessing, DocumentExtraction
 from app.repositories.financial_profile_repository import FinancialProfileRepository
@@ -214,7 +214,7 @@ Expenses: Your average monthly spending is about $3,800, with the largest catego
 
 I also noticed regular transfers to a home loan account of $2,100/month."
 """,
-            db=SqliteDb(db_file=db_file),
+            db=agno_db(db_file),
             user_id=f"{username}_document",
             output_schema=DocumentExtractionResult,
             markdown=False,

@@ -48,6 +48,30 @@ class Settings(BaseSettings):
     # OpenAI Configuration
     OPENAI_API_KEY: str | None = Field(default=None, description="OpenAI API key for Agno agent")
 
+    # Visualization (chat)
+    VISUALIZATION_ENABLED: bool = Field(default=True, description="Enable in-chat visualization cards")
+    
+    # Goal Timeline Classification Thresholds (in years)
+    # Industry standard: Short-term < 2 years, Medium-term 2-5 years, Long-term > 5 years
+    GOAL_TIMELINE_SHORT_YEARS: float = Field(default=2.0, description="Maximum years for short-term goals (< this value)")
+    GOAL_TIMELINE_MEDIUM_YEARS: float = Field(default=5.0, description="Maximum years for medium-term goals (>= short, < this value). Long-term goals are >= this value.")
+    
+    # Feature Flags - comma-separated list of enabled features
+    # Available flags: intelligence_summary, visualization
+    # Example: FEATURE_FLAGS="visualization" (intelligence_summary disabled by default)
+    FEATURE_FLAGS: str = Field(
+        default="visualization",
+        description="Comma-separated list of enabled feature flags"
+    )
+    
+    @computed_field
+    @property
+    def enabled_features(self) -> list[str]:
+        """Get list of enabled feature flags."""
+        if not self.FEATURE_FLAGS:
+            return []
+        return [f.strip().lower() for f in self.FEATURE_FLAGS.split(",") if f.strip()]
+
     LOGIN_RATE_LIMIT_PER_MINUTE: int = Field(default=5, description="Maximum login attempts per minute per IP")
     REGISTER_RATE_LIMIT_PER_HOUR: int = Field(default=3, description="Maximum registration attempts per hour per IP")
     OTP_VERIFY_RATE_LIMIT_PER_MINUTE: int = Field(default=5, description="Maximum OTP verification attempts per minute per IP")

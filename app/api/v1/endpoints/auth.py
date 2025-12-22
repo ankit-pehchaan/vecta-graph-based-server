@@ -222,14 +222,15 @@ async def logout(response: Response):
 
 @router.get("/me", response_model=ApiResponse, status_code=status.HTTP_200_OK)
 async def get_me(current_user: dict = Depends(get_current_user)):
-    """Get current authenticated user information."""
+    """Get current authenticated user information including feature flags."""
     return ApiResponse(
         success=True,
         message="User retrieved successfully",
         data=UserData(
             email=current_user["email"],
             name=current_user.get("name"),
-            account_status=current_user.get("account_status")
+            account_status=current_user.get("account_status"),
+            features=settings.enabled_features
         )
     )
 

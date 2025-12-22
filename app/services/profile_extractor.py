@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from agno.db.sqlite import SqliteDb
+from app.services.agno_db import agno_db
 from app.schemas.financial import FinancialProfile, Goal, Asset, Liability, Insurance, Superannuation
 from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.core.config import settings
@@ -98,25 +98,33 @@ class ProfileExtractor:
             model=OpenAIChat(id="gpt-4o"),
             instructions="""You are a financial data extraction specialist. Extract financial information from user messages.
 
+CRITICAL - NUMERIC VALUES MUST BE PURE NUMBERS:
+- ALL monetary values (value, amount, balance, income, expenses, coverage_amount, monthly_payment) MUST be returned as pure numbers (float or int)
+- NEVER include currency symbols ($), commas, or text like "k" or "million"
+- Convert shorthand: "$100k" → 100000, "$1.5m" → 1500000, "$800,000" → 800000
+- Percentages should be decimals for rates: "5%" → 5.0, "11.5%" → 11.5
+
 EXAMPLES:
 - "I want to retire at 50" → Goal with description: "Retire at 50"
-- "I have $100k in savings" → Asset with asset_type: "savings", description: "Savings account", value: 100000
-- "I have $50k cash in the bank" → Asset with asset_type: "cash", description: "Bank account", value: 50000
-- "I own a house worth $800k" → Asset with asset_type: "property", description: "Family home", value: 800000
-- "I have a $500k mortgage" → Liability with liability_type: "home_loan", description: "Home loan", amount: 500000
-- "I have life insurance" → Insurance with insurance_type: "life"
-- "My super balance is $200k with AustralianSuper" → Superannuation with fund_name: "AustralianSuper", balance: 200000
+- "I have $100k in savings" → Asset with asset_type: "savings", description: "Savings account", value: 100000.0
+- "I have $50k cash in the bank" → Asset with asset_type: "cash", description: "Bank account", value: 50000.0
+- "I own a house worth $800k" → Asset with asset_type: "property", description: "Family home", value: 800000.0
+- "I have a $500k mortgage at 5.5%" → Liability with liability_type: "home_loan", description: "Home loan", amount: 500000.0, interest_rate: 5.5
+- "I have life insurance for $1m" → Insurance with insurance_type: "life", coverage_amount: 1000000.0
+- "My super balance is $200k with AustralianSuper" → Superannuation with fund_name: "AustralianSuper", balance: 200000.0
 - "I'm 35, married with 2 kids" → Note in goal motivation or description: "Age 35, married with 2 dependents"
-- "I earn $150k per year" → income: 150000
+- "I earn $150k per year" → income: 150000.0
+- "I save $2k per month" → Asset with asset_type: "savings", description: "Monthly savings", value: 2000.0
 
 RULES:
 1. Extract what is mentioned - don't infer
-2. Use Australian Dollars (AUD)
-3. For goals: ALWAYS include a clear description of what the user wants
+2. Use Australian Dollars (AUD) - BUT output ONLY the number, no currency symbol
+3. For goals: ALWAYS include a clear description of what the user wants (STRING field)
 4. For assets/liabilities: include type and description
 5. Cash and savings go into the 'assets' list with appropriate asset_type
 6. Superannuation goes into the 'superannuation' list with fund details
 7. Only extract NEW information not already in the existing profile
+8. ALL numeric fields MUST be numbers (int or float), NEVER strings
 
 LIFE STAGE INDICATORS TO CAPTURE:
 When the user mentions personal context, capture it:
@@ -129,7 +137,7 @@ When the user mentions personal context, capture it:
 Store life stage info in goal motivation field or as a goal description like "Life stage: [details]"
 
 Be thorough - extract ANY financial goal, asset, debt, super, income, or life stage information mentioned.""",
-            db=SqliteDb(db_file=db_file),
+            db=agno_db(db_file),
             user_id=f"{username}_extractor",
             output_schema=ProfileExtractionResult,
             markdown=False,
@@ -331,6 +339,7 @@ Extract ONLY NEW financial information that is not already in the existing profi
             print(f"[ProfileExtractor] Profile updated for {username}, changes: {list(changes.keys())}")
             return {
                 "changes": changes,
+                "previous_profile": existing_profile,
                 "profile": updated_profile
             }
         
@@ -340,6 +349,16 @@ Extract ONLY NEW financial information that is not already in the existing profi
     def _format_existing_profile(self, profile: Dict[str, Any]) -> str:
         """Format existing profile for agent context."""
         parts = []
+
+        def _fmt_money(value: Any) -> str:
+            """Format money values safely (handles None/strings)."""
+            try:
+                if value is None:
+                    return "$0.00"
+                v = float(value)
+                return f"${v:,.2f}"
+            except Exception:
+                return "$0.00"
         
         if profile.get("goals"):
             goals_desc = [g.get("description", "Unknown goal") for g in profile["goals"]]
@@ -358,16 +377,20 @@ Extract ONLY NEW financial information that is not already in the existing profi
             parts.append(f"Insurance already extracted: {', '.join(insurance_desc)}")
         
         if profile.get("superannuation"):
-            super_desc = [f"{s.get('fund_name', 'Unknown')}: ${s.get('balance', 0):,.2f}" for s in profile["superannuation"]]
+            super_desc = [
+                f"{s.get('fund_name', 'Unknown')}: {_fmt_money(s.get('balance'))}"
+                for s in profile["superannuation"]
+            ]
             parts.append(f"Superannuation already extracted: {', '.join(super_desc)}")
         
         if profile.get("income") is not None:
-            parts.append(f"Income: ${profile['income']:,.2f} annually")
+            parts.append(f"Income: {_fmt_money(profile.get('income'))} annually")
         
         if profile.get("expenses") is not None:
-            parts.append(f"Expenses: ${profile['expenses']:,.2f} monthly")
+            parts.append(f"Expenses: {_fmt_money(profile.get('expenses'))} monthly")
         
         if profile.get("risk_tolerance"):
             parts.append(f"Risk tolerance: {profile['risk_tolerance']}")
         
         return "\n".join(parts) if parts else "No existing profile data."
+
