@@ -66,6 +66,21 @@ class IntelligenceSummary(BaseModel):
 
 # Document processing messages
 
+class DocumentUploadPrompt(BaseModel):
+    """
+    Server-initiated prompt to trigger document upload widget in UI.
+
+    Sent when the agent detects user wants to upload a document.
+    The frontend should display an inline upload widget when receiving this.
+    """
+    model_config = ConfigDict(extra='ignore')
+
+    type: Literal["document_upload_prompt"] = "document_upload_prompt"
+    message: str  # Agent's response acknowledging the upload request
+    suggested_types: list[str] = []  # Suggested document types based on context
+    timestamp: Optional[str] = None
+
+
 class DocumentUpload(BaseModel):
     """Document upload request from client."""
     model_config = ConfigDict(extra='forbid')
@@ -111,10 +126,31 @@ class DocumentConfirm(BaseModel):
     timestamp: Optional[str] = None
 
 
+class PipelineDebug(BaseModel):
+    """
+    Debug information from the education pipeline.
+
+    Sent after each message to provide visibility into pipeline stages:
+    1. Intent Classification - What user is trying to do
+    2. Validation - Profile completeness check
+    3. Strategy - Decided conversation direction
+    4. Output QA - Response quality review
+    """
+    model_config = ConfigDict(extra='ignore')
+
+    type: Literal["pipeline_debug"] = "pipeline_debug"
+    intent: dict  # IntentClassification result
+    validation: dict  # ValidationResult
+    strategy: dict  # StrategyDecision
+    qa_result: dict  # OutputQAResult
+    duration_seconds: float
+    timestamp: Optional[str] = None
+
+
 class WSMessage(BaseModel):
     """Union type for all WebSocket messages."""
     model_config = ConfigDict(extra='ignore')
-    
+
     # This is a base class - actual messages will be one of the above types
     pass
 
