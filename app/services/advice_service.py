@@ -1,6 +1,7 @@
 import json
 import asyncio
-from typing import AsyncGenerator, Optional, Set
+import logging
+from typing import AsyncGenerator, Optional, Set, Tuple
 from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -23,10 +24,10 @@ from app.schemas.advice import (
     UIActionsMessage,
     UIAction,
     DocumentUploadPrompt,
-    DocumentConfirm,
     PipelineDebug
 )
 from app.schemas.financial import FinancialProfile
+from app.core.config import settings
 from app.core.prompts import (
     DOCUMENT_UPLOAD_INTENT_KEYWORDS,
     DOCUMENT_CONTEXT_KEYWORDS,
@@ -62,10 +63,10 @@ class AdviceService:
         self,
         agent_service: AgnoAgentService,
         profile_extractor: ProfileExtractor,
+        db_manager=None,
         intelligence_service: Optional[IntelligenceService] = None,
         document_agent_service: Optional[DocumentAgentService] = None,
         visualization_service: Optional[VisualizationService] = None,
-
     ):
         self.agent_service = agent_service
         self.profile_extractor = profile_extractor
@@ -133,8 +134,25 @@ class AdviceService:
         - If profile is not ready (discovery), only consider viz if user explicitly asks for it
           or asks a numeric scenario question (e.g., mortgage/loan comparison).
         - If profile is ready, consider viz only when the turn is numeric/scenario-ish.
+        """
+        if not self._is_visualization_enabled():
+            return False
 
-        logger.info("[INIT] AdviceService initialized")
+        u = (user_text or "").lower()
+        a = (agent_text or "").lower()
+
+        explicit = self._looks_like_explicit_viz_request(user_text)
+
+        numeric_topics = (
+            "mortgage", "loan", "amort", "repayment", "interest",
+            "offset", "refinance", "term", "rate",
+            "projection", "scenario", "what if", "vs ", " versus ",
+        )
+        topic = any(w in u for w in numeric_topics) or any(w in a for w in ("amort", "repayment", "interest"))
+
+        if not profile_ready:
+            return bool(explicit or topic)
+        return bool(explicit or topic)
 
     def _detect_document_upload_intent(self, message: str) -> Tuple[bool, list[str]]:
         """
@@ -229,27 +247,6 @@ class AdviceService:
             return DOCUMENT_UPLOAD_RESPONSE_SPECIFIC.format(document_type=display_name)
         return DOCUMENT_UPLOAD_RESPONSE_GENERIC
 
-    async def send_message(self, websocket: WebSocket, message: dict) -> bool:
-        """
-        if not self._is_visualization_enabled():
-            return False
-
-        u = (user_text or "").lower()
-        a = (agent_text or "").lower()
-
-        explicit = self._looks_like_explicit_viz_request(user_text)
-
-        numeric_topics = (
-            "mortgage", "loan", "amort", "repayment", "interest",
-            "offset", "refinance", "term", "rate",
-            "projection", "scenario", "what if", "vs ", " versus ",
-        )
-        topic = any(w in u for w in numeric_topics) or any(w in a for w in ("amort", "repayment", "interest"))
-
-        if not profile_ready:
-            return bool(explicit or topic)
-        return bool(explicit or topic)
-
     async def _fetch_profile_data(self, username: str) -> Optional[dict]:
         """Load the latest profile snapshot from the DB (fresh session)."""
         try:
@@ -262,12 +259,9 @@ class AdviceService:
     async def send_message(
         self,
         websocket: WebSocket,
-        message: dict,
-        conn_state: Optional[ConnectionState] = None
+        message: dict
     ) -> bool:
         """
-        Send JSON message via WebSocket with serialization lock.
-        
         Send JSON message via WebSocket.
 
         Returns:

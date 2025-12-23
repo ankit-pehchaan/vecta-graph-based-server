@@ -614,7 +614,7 @@ GREETING_FIRST_TIME = "Hello {user_name}, great to connect with you. What's been
 
 GREETING_RETURNING_WITH_SUMMARY = "Good to speak with you again {user_name}. Last time we {summary} Where would you like to pick things up?"
 
-GREETING_RETURNING_NO_SUMMARY = "Welcome back {user_name}. What's been on your mind since we last spoke?"
+GREETING_RETURNING_NO_SUMMARY = "Welcome  {user_name}. What's been on your mind today?"
 
 
 # =============================================================================
