@@ -92,6 +92,7 @@ def _get_advice_service() -> AdviceService:
         _advice_service = AdviceService(
             agent_service=agent_service,
             profile_extractor=profile_extractor,
+            db_manager=db_manager,
             intelligence_service=intelligence_service,
             document_agent_service=document_agent_service
         )
