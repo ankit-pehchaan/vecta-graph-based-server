@@ -99,16 +99,13 @@ class IntentClassification(BaseModel):
         description="ALL goals mentioned (list) - noted for later, not acted on immediately"
     )
     information_shared: InformationShared = Field(
-        default_factory=InformationShared,
-        description="What info was shared in this message"
+        default_factory=InformationShared
     )
     emotional_signals: EmotionalSignals = Field(
-        default_factory=EmotionalSignals,
-        description="Emotional state detected"
+        default_factory=EmotionalSignals
     )
     conversation_dynamics: ConversationDynamics = Field(
-        default_factory=ConversationDynamics,
-        description="CRITICAL: Engagement dynamics for strategy"
+        default_factory=ConversationDynamics
     )
 
 
@@ -187,7 +184,7 @@ class OutputQAChecks(BaseModel):
 class OutputQAIssue(BaseModel):
     """A specific issue found in the response."""
     issue_type: str = Field(..., description="Type: robotic_pattern, directive_miss, compliance, tone, length, multiple_questions, deflection")
-    description: str = Field(..., description="What's wrong")
+    issue_description: str = Field(..., description="What's wrong")
     severity: str = Field(default="minor", description="Severity: minor, major, blocking")
 
 
@@ -198,12 +195,10 @@ class OutputQAResult(BaseModel):
         description="Status: approved, needs_revision, blocked"
     )
     checks: OutputQAChecks = Field(
-        default_factory=OutputQAChecks,
-        description="Explicit boolean checks"
+        default_factory=OutputQAChecks
     )
     issues: List[OutputQAIssue] = Field(
-        default_factory=list,
-        description="Specific issues found with type and severity"
+        default_factory=list
     )
     revision_guidance: Optional[str] = Field(
         default=None,
@@ -794,11 +789,11 @@ Return structured approval with explicit boolean checks."""
             if result.issues:
                 for issue in result.issues:
                     if issue.severity == "blocking":
-                        logger.error(f"BLOCKING Issue: [{issue.issue_type}] {issue.description}")
+                        logger.error(f"BLOCKING Issue: [{issue.issue_type}] {issue.issue_description}")
                     elif issue.severity == "major":
-                        logger.warning(f"Major Issue: [{issue.issue_type}] {issue.description}")
+                        logger.warning(f"Major Issue: [{issue.issue_type}] {issue.issue_description}")
                     else:
-                        logger.info(f"Minor Issue: [{issue.issue_type}] {issue.description}")
+                        logger.info(f"Minor Issue: [{issue.issue_type}] {issue.issue_description}")
 
             if result.revision_guidance:
                 logger.info(f"Revision Guidance: {result.revision_guidance[:100]}")
