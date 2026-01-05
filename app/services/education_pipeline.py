@@ -1319,7 +1319,7 @@ USER MESSAGE: {user_message}
 CURRENT PROFILE:
 {profile_summary}
 
-GOALS MENTIONED SO FAR: {', '.join(profile.get('goals', [])) if profile.get('goals') else 'None yet'}
+GOALS MENTIONED SO FAR: {', '.join(g.get('description', 'Unknown') for g in profile.get('goals', [])) if profile.get('goals') else 'None yet'}
 
 Remember:
 - If we don't know the user's age and they mentioned a goal → target_field = "age"
