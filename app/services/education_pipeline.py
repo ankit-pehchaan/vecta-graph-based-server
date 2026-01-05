@@ -53,8 +53,18 @@ if not logger.handlers:
 # PYDANTIC SCHEMAS FOR STRUCTURED OUTPUTS
 # =============================================================================
 
+class LifeContextShared(BaseModel):
+    """What life context was shared in this message."""
+    persona_info: bool = Field(default=False, description="Did they share age, relationship, job, family, location?")
+    life_aspirations: bool = Field(default=False, description="Did they share plans (marriage, kids, career, retirement)?")
+    life_context_type: Optional[str] = Field(
+        default=None,
+        description="Type: age, relationship, family, career, location, marriage_plans, family_planning, career_trajectory, retirement_vision, lifestyle_aspirations"
+    )
+
+
 class InformationShared(BaseModel):
-    """What information was shared in this message."""
+    """What financial information was shared in this message."""
     contains_financial_data: bool = Field(default=False, description="Did they share numbers/financial facts?")
     contains_personal_context: bool = Field(default=False, description="Did they share life context?")
     answer_completeness: str = Field(
@@ -92,11 +102,15 @@ class IntentClassification(BaseModel):
     """Output from Intent Classifier agent - aligned with arch.md."""
     primary_intent: str = Field(
         ...,
-        description="Primary intent: sharing_info, stating_goal, asking_question, expressing_emotion, seeking_validation, pushing_back, small_talk, unclear"
+        description="Primary intent: sharing_persona, sharing_life_aspirations, sharing_financial, stating_goal, asking_question, expressing_emotion, seeking_validation, pushing_back, small_talk, unclear"
     )
     goals_mentioned: List[str] = Field(
         default_factory=list,
         description="ALL goals mentioned (list) - noted for later, not acted on immediately"
+    )
+    life_context_shared: LifeContextShared = Field(
+        default_factory=LifeContextShared,
+        description="What life context was shared in this message"
     )
     information_shared: InformationShared = Field(
         default_factory=InformationShared
@@ -113,27 +127,35 @@ class ValidationResult(BaseModel):
     """Output from QA/Validator agent - focuses on big picture completeness."""
     discovery_completeness: str = Field(
         default="early",
-        description="How complete is our understanding: early (<25%), partial (25-50%), substantial (50-75%), comprehensive (75%+)"
+        description="How complete is our understanding: early (Phase 1 incomplete), partial (Phase 1 done but 2/3 incomplete), substantial (Phases 1-3 mostly complete), comprehensive (Phases 1-4 complete)"
+    )
+    current_phase: str = Field(
+        default="persona",
+        description="Which phase we should be in: persona, life_aspirations, financial_foundation, goals_overview, ready_for_depth"
     )
     life_foundation_gaps: List[str] = Field(
         default_factory=list,
-        description="What we don't know about their life: age, family, career, location"
+        description="What we don't know about their PERSONA (Phase 1): age, relationship status, kids/family, career, location"
+    )
+    life_aspirations_gaps: List[str] = Field(
+        default_factory=list,
+        description="What we don't know about their LIFE VISION (Phase 2): marriage plans, family planning, career trajectory, lifestyle goals, retirement vision"
     )
     financial_foundation_gaps: List[str] = Field(
         default_factory=list,
-        description="What we don't know about finances: income, savings, debts, super, insurance"
+        description="What we don't know about finances (Phase 3): income, savings, debts, super, insurance"
     )
     goals_gaps: List[str] = Field(
         default_factory=list,
-        description="What we don't know about goals: only know one goal, no priorities, no timelines"
+        description="What we don't know about goals (Phase 4): only know one goal, no priorities, no timelines, haven't explored retirement, haven't explored family goals"
     )
     priority_questions: List[str] = Field(
         default_factory=list,
-        description="Most important 2-3 things to learn next to build the big picture"
+        description="Most important 2-3 things to learn next - MUST follow phase order: Persona → Life Aspirations → Finances → Goals"
     )
     ready_for_goal_planning: bool = Field(
         default=False,
-        description="True ONLY if discovery is substantial (50%+) - don't rush to goal planning"
+        description="TRUE only when Phases 1-3 complete and we understand multiple goals. FALSE if any phase incomplete."
     )
     contradictions: List[str] = Field(
         default_factory=list,
@@ -145,15 +167,23 @@ class StrategyDecision(BaseModel):
     """Output from Strategy/Router agent - aligned with arch.md."""
     next_action: str = Field(
         ...,
-        description="Action: probe_gap, clarify_vague, resolve_contradiction, acknowledge_emotion, redirect_to_discovery, pivot_to_education, answer_direct_question, handle_resistance"
+        description="Action: probe_gap, clarify_vague, resolve_contradiction, acknowledge_emotion, redirect_to_discovery, pivot_to_education, reality_check, goal_deep_dive, handle_resistance"
+    )
+    current_phase: str = Field(
+        default="persona",
+        description="Current discovery phase: persona, financial_foundation, goals_overview, reality_check, goal_deep_dive"
     )
     action_details: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Details for the action: target_field, probe_approach, clarification_type, etc."
+        description="Details for the action: target_field, probe_approach, mismatch_detected, education_approach, etc."
+    )
+    question_intensity: str = Field(
+        default="standard",
+        description="How aggressive to probe: gentle, standard, direct"
     )
     conversation_tone: str = Field(
         default="warm",
-        description="Tone: warm, direct, gentle, encouraging, grounding"
+        description="Tone: warm, direct, gentle, encouraging, grounding, reality-check"
     )
     response_length: str = Field(
         default="medium",
@@ -165,7 +195,7 @@ class StrategyDecision(BaseModel):
     )
     strategic_reasoning: str = Field(
         default="",
-        description="Why this is the right move now"
+        description="Why this is the right move now, which phase we're in"
     )
 
 
@@ -362,6 +392,15 @@ Classify the intent, emotional state, urgency, and key topics."""
             logger.info(f"Primary Intent: {result.primary_intent}")
             logger.info(f"Goals Mentioned: {', '.join(result.goals_mentioned) if result.goals_mentioned else 'None'}")
 
+            # Life context shared
+            life_ctx = result.life_context_shared
+            if life_ctx.persona_info:
+                logger.info("Contains Persona Info: Yes")
+            if life_ctx.life_aspirations:
+                logger.info("Contains Life Aspirations: Yes")
+            if life_ctx.life_context_type:
+                logger.info(f"Life Context Type: {life_ctx.life_context_type}")
+
             # Information shared
             info = result.information_shared
             logger.info(f"Answer Completeness: {info.answer_completeness}")
@@ -455,7 +494,7 @@ Classify the intent, emotional state, urgency, and key topics."""
         # Determine engagement level for context
         engagement = intent.conversation_dynamics.user_engagement if intent.conversation_dynamics else "engaged"
 
-        prompt = f"""Evaluate how complete our understanding of this user is - for their WHOLE life, not just one goal.
+        prompt = f"""Evaluate how complete our understanding of this user is - for their WHOLE LIFE, not just one goal.
 
 USER INTENT: {intent.primary_intent}
 GOALS MENTIONED SO FAR: {', '.join(intent.goals_mentioned) if intent.goals_mentioned else 'None yet'}
@@ -464,20 +503,40 @@ USER ENGAGEMENT: {engagement}
 CURRENT PROFILE:
 {profile_summary}
 
-Remember: We need the BIG PICTURE before we can help with ANY specific goal.
-Check against the full checklist:
-- Life Foundation: age, family, career, location
-- Financial Foundation: income, savings, debts, super, insurance
-- ALL Goals: not just the one mentioned - what else matters?
-- Context: priorities, risk tolerance, what's driving them
+Remember: PERSON → LIFE VISION → FINANCES → ALL GOALS → ADVICE
+
+Check against the PHASED checklist (in order):
+
+PHASE 1 - PERSONA (Who are they?):
+- Age (CRITICAL - shapes everything)
+- Relationship status (solo, partnered, married, divorced)
+- Family (kids? how many? planning kids?)
+- Career/job situation
+- Location
+
+PHASE 2 - LIFE ASPIRATIONS (What kind of life do they want?):
+- Marriage plans (if partnered)
+- Family planning (want kids? more kids? when?)
+- Career trajectory (where in 5-10 years?)
+- Lifestyle aspirations (sea change? upgrade? simplify?)
+- Retirement vision (when? what does it look like?)
+
+PHASE 3 - FINANCIAL FOUNDATION (What do they have?):
+- Income, savings, debts, super, insurance
+
+PHASE 4 - ALL GOALS (What do they want?):
+- Not just the first goal mentioned - what else matters?
+- Retirement, education, travel, lifestyle goals?
 
 Determine:
-1. How complete is our understanding overall? (early/partial/substantial/comprehensive)
-2. What life foundation gaps exist?
-3. What financial foundation gaps exist?
-4. What do we not know about their goals (only know one? don't know priorities?)
-5. What are the 2-3 most important things to learn next?
-6. Are we ready to start goal-specific planning? (Only if discovery is substantial!)"""
+1. Which phase are we currently in? (persona/life_aspirations/financial_foundation/goals_overview/ready_for_depth)
+2. How complete is our understanding? (early/partial/substantial/comprehensive)
+3. What persona gaps exist (Phase 1)?
+4. What life aspiration gaps exist (Phase 2)?
+5. What financial foundation gaps exist (Phase 3)?
+6. What goals gaps exist (Phase 4)?
+7. Priority questions - MUST follow phase order!
+8. Are we ready for goal planning? (ONLY if Phases 1-3 complete)"""
 
         try:
             response = await agent.arun(prompt) if hasattr(agent, 'arun') else agent.run(prompt)
@@ -493,13 +552,16 @@ Determine:
                 )
 
             logger.info(f"Discovery Completeness: {result.discovery_completeness}")
+            logger.info(f"Current Phase: {result.current_phase}")
             logger.info(f"Ready for Goal Planning: {result.ready_for_goal_planning}")
             if result.life_foundation_gaps:
-                logger.info(f"Life Foundation Gaps: {', '.join(result.life_foundation_gaps)}")
+                logger.info(f"Persona Gaps (Phase 1): {', '.join(result.life_foundation_gaps)}")
+            if result.life_aspirations_gaps:
+                logger.info(f"Life Aspirations Gaps (Phase 2): {', '.join(result.life_aspirations_gaps)}")
             if result.financial_foundation_gaps:
-                logger.info(f"Financial Foundation Gaps: {', '.join(result.financial_foundation_gaps)}")
+                logger.info(f"Financial Gaps (Phase 3): {', '.join(result.financial_foundation_gaps)}")
             if result.goals_gaps:
-                logger.info(f"Goals Gaps: {', '.join(result.goals_gaps)}")
+                logger.info(f"Goals Gaps (Phase 4): {', '.join(result.goals_gaps)}")
             if result.priority_questions:
                 logger.info(f"Priority Questions: {len(result.priority_questions)} - {result.priority_questions[0] if result.priority_questions else ''}")
             if result.contradictions:
@@ -542,7 +604,13 @@ Determine:
         trying_to_skip = dynamics.trying_to_skip_ahead if dynamics else False
         answer_completeness = intent.information_shared.answer_completeness if intent.information_shared else "complete"
 
-        prompt = f"""Decide the conversation strategy - with STRONG bias toward big picture discovery.
+        # Get life aspirations gaps (new field)
+        life_aspirations_gaps = getattr(validation, 'life_aspirations_gaps', [])
+        current_phase = getattr(validation, 'current_phase', 'persona')
+
+        prompt = f"""Decide the conversation strategy - with STRONG bias toward understanding the PERSON first.
+
+CARDINAL RULE: A mentioned goal is an INVITATION to understand the person, NOT permission to discuss that goal.
 
 USER INTENT: {intent.primary_intent}
 EMOTIONAL STATE: {emotional_state} (intensity: {emotional_intensity})
@@ -554,23 +622,32 @@ CONVERSATION DYNAMICS:
 - Trying to Skip Ahead: {trying_to_skip}
 
 VALIDATION RESULTS:
+- Current Phase: {current_phase}
 - Discovery Completeness: {validation.discovery_completeness}
 - Ready for Goal Planning: {validation.ready_for_goal_planning}
-- Life Foundation Gaps: {', '.join(validation.life_foundation_gaps) if validation.life_foundation_gaps else 'None'}
-- Financial Foundation Gaps: {', '.join(validation.financial_foundation_gaps) if validation.financial_foundation_gaps else 'None'}
-- Goals Gaps: {', '.join(validation.goals_gaps) if validation.goals_gaps else 'None'}
+- Persona Gaps (Phase 1): {', '.join(validation.life_foundation_gaps) if validation.life_foundation_gaps else 'None'}
+- Life Aspirations Gaps (Phase 2): {', '.join(life_aspirations_gaps) if life_aspirations_gaps else 'None'}
+- Financial Gaps (Phase 3): {', '.join(validation.financial_foundation_gaps) if validation.financial_foundation_gaps else 'None'}
+- Goals Gaps (Phase 4): {', '.join(validation.goals_gaps) if validation.goals_gaps else 'None'}
 - Priority Questions: {validation.priority_questions}
 
-CRITICAL RULE: If discovery_completeness is early or partial, we MUST continue discovery.
-If only one goal mentioned, we MUST explore other goals before diving into that one.
+PHASE ORDER (SACRED - NO EXCEPTIONS):
+Persona → Life Aspirations → Financial Foundation → All Goals → Reality Check → Deep Dive
+
+CRITICAL RULES:
+- If Phase 1 (Persona) incomplete → MUST stay in persona phase
+- If Phase 2 (Life Aspirations) incomplete → CANNOT discuss finances deeply yet
+- If user stated a goal → acknowledge warmly, then redirect to current phase
+- If only one goal mentioned → MUST explore other goals before diving in
 
 Return a StrategyDecision with:
-1. next_action: probe_gap | clarify_vague | resolve_contradiction | acknowledge_emotion | redirect_to_discovery | pivot_to_education | answer_direct_question | handle_resistance
-2. action_details: target_field, probe_approach, framing_hint
-3. conversation_tone: warm | direct | gentle | encouraging | grounding
-4. response_length: brief | medium | detailed
-5. things_to_avoid: list of things NOT to do
-6. strategic_reasoning: why this is the right move"""
+1. current_phase: persona | life_aspirations | financial_foundation | goals_overview | reality_check | goal_deep_dive
+2. next_action: probe_gap | clarify_vague | acknowledge_emotion | redirect_to_discovery | pivot_to_education | handle_resistance
+3. action_details: target_field (use new fields like marriage_plans, family_planning, career_trajectory, retirement_vision), probe_approach, educational_hook
+4. conversation_tone: warm | direct | gentle | encouraging | grounding
+5. response_length: brief | medium | detailed
+6. things_to_avoid: list of things NOT to do
+7. strategic_reasoning: why this is the right move and which phase we're in"""
 
         try:
             response = await agent.arun(prompt) if hasattr(agent, 'arun') else agent.run(prompt)
@@ -587,7 +664,9 @@ Return a StrategyDecision with:
                     response_length="medium"
                 )
 
+            logger.info(f"Current Phase: {result.current_phase}")
             logger.info(f"Next Action: {result.next_action}")
+            logger.info(f"Question Intensity: {result.question_intensity}")
             logger.info(f"Conversation Tone: {result.conversation_tone}")
             logger.info(f"Response Length: {result.response_length}")
             if result.action_details:
