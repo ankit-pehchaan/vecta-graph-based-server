@@ -1,7 +1,7 @@
 """User SQLAlchemy model."""
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-from sqlalchemy import String, Integer, Float, DateTime
+from sqlalchemy import String, Integer, Float, DateTime, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from app.core.constants import AccountStatus
@@ -23,7 +23,7 @@ class User(Base):
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Nullable for OAuth users
     oauth_provider: Mapped[str | None] = mapped_column(
         String(20), nullable=True, index=True
-    ) 
+    )
     account_status: Mapped[str] = mapped_column(
         String(20), default=AccountStatus.ACTIVE.value, nullable=False
     )
@@ -34,7 +34,23 @@ class User(Base):
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    
+
+    # Persona fields (Phase 1 discovery)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    relationship_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    has_kids: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    number_of_kids: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    career: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Life aspirations (Phase 2 discovery)
+    marriage_plans: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    family_plans: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    career_goals: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    retirement_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retirement_vision: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    lifestyle_goals: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     # Financial profile fields
     income: Mapped[float | None] = mapped_column(Float, nullable=True)  # Annual income
     monthly_income: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -91,6 +107,21 @@ class User(Base):
                 else None
             ),
             "locked_at": self.locked_at.isoformat() if self.locked_at else None,
+            # Persona fields
+            "age": self.age,
+            "relationship_status": self.relationship_status,
+            "has_kids": self.has_kids,
+            "number_of_kids": self.number_of_kids,
+            "career": self.career,
+            "location": self.location,
+            # Life aspirations
+            "marriage_plans": self.marriage_plans,
+            "family_plans": self.family_plans,
+            "career_goals": self.career_goals,
+            "retirement_age": self.retirement_age,
+            "retirement_vision": self.retirement_vision,
+            "lifestyle_goals": self.lifestyle_goals,
+            # Financial fields
             "income": self.income,
             "monthly_income": self.monthly_income,
             "expenses": self.expenses,
@@ -105,6 +136,21 @@ class User(Base):
         return {
             "id": self.id,
             "username": self.email,
+            # Persona fields
+            "age": self.age,
+            "relationship_status": self.relationship_status,
+            "has_kids": self.has_kids,
+            "number_of_kids": self.number_of_kids,
+            "career": self.career,
+            "location": self.location,
+            # Life aspirations
+            "marriage_plans": self.marriage_plans,
+            "family_plans": self.family_plans,
+            "career_goals": self.career_goals,
+            "retirement_age": self.retirement_age,
+            "retirement_vision": self.retirement_vision,
+            "lifestyle_goals": self.lifestyle_goals,
+            # Financial fields
             "income": self.income,
             "monthly_income": self.monthly_income,
             "expenses": self.expenses,

@@ -71,6 +71,23 @@ class ExtractedSuperannuation(BaseModel):
 
 class ProfileExtractionResult(BaseModel):
     """Structured output from profile extraction agent."""
+    # Persona fields (Phase 1)
+    age: Optional[int] = Field(default=None, description="User's age if mentioned")
+    relationship_status: Optional[str] = Field(default=None, description="Relationship status: single, partnered, married, divorced, widowed")
+    has_kids: Optional[bool] = Field(default=None, description="Whether user has children")
+    number_of_kids: Optional[int] = Field(default=None, description="Number of children if mentioned")
+    career: Optional[str] = Field(default=None, description="Job, profession, or career description")
+    location: Optional[str] = Field(default=None, description="City, region, or location if mentioned")
+
+    # Life aspirations (Phase 2)
+    marriage_plans: Optional[str] = Field(default=None, description="Marriage plans or timeline if mentioned")
+    family_plans: Optional[str] = Field(default=None, description="Plans for having kids or more kids")
+    career_goals: Optional[str] = Field(default=None, description="Career trajectory or future plans")
+    retirement_age: Optional[int] = Field(default=None, description="Target retirement age if mentioned")
+    retirement_vision: Optional[str] = Field(default=None, description="What retirement looks like to them")
+    lifestyle_goals: Optional[str] = Field(default=None, description="Lifestyle aspirations mentioned")
+
+    # Financial data (Phase 3)
     goals: Optional[List[ExtractedGoal]] = Field(default_factory=list, description="Financial goals mentioned by the user")
     assets: Optional[List[ExtractedAsset]] = Field(default_factory=list, description="Assets including cash, savings, investments, property")
     liabilities: Optional[List[ExtractedLiability]] = Field(default_factory=list, description="Debts/loans owed by the user")
@@ -309,7 +326,70 @@ Extract ONLY NEW financial information that is not already in the existing profi
             if existing_profile.get("risk_tolerance") != extraction_result.risk_tolerance:
                 new_items["risk_tolerance"] = extraction_result.risk_tolerance
                 changes["risk_tolerance"] = extraction_result.risk_tolerance
-        
+
+        # Process persona fields (Phase 1)
+        if extraction_result.age is not None:
+            if existing_profile.get("age") != extraction_result.age:
+                new_items["age"] = extraction_result.age
+                changes["age"] = extraction_result.age
+                logger.info(f"[EXTRACTION] Age extracted: {extraction_result.age}")
+
+        if extraction_result.relationship_status is not None:
+            if existing_profile.get("relationship_status") != extraction_result.relationship_status:
+                new_items["relationship_status"] = extraction_result.relationship_status
+                changes["relationship_status"] = extraction_result.relationship_status
+
+        if extraction_result.has_kids is not None:
+            if existing_profile.get("has_kids") != extraction_result.has_kids:
+                new_items["has_kids"] = extraction_result.has_kids
+                changes["has_kids"] = extraction_result.has_kids
+
+        if extraction_result.number_of_kids is not None:
+            if existing_profile.get("number_of_kids") != extraction_result.number_of_kids:
+                new_items["number_of_kids"] = extraction_result.number_of_kids
+                changes["number_of_kids"] = extraction_result.number_of_kids
+
+        if extraction_result.career is not None:
+            if existing_profile.get("career") != extraction_result.career:
+                new_items["career"] = extraction_result.career
+                changes["career"] = extraction_result.career
+
+        if extraction_result.location is not None:
+            if existing_profile.get("location") != extraction_result.location:
+                new_items["location"] = extraction_result.location
+                changes["location"] = extraction_result.location
+
+        # Process life aspiration fields (Phase 2)
+        if extraction_result.marriage_plans is not None:
+            if existing_profile.get("marriage_plans") != extraction_result.marriage_plans:
+                new_items["marriage_plans"] = extraction_result.marriage_plans
+                changes["marriage_plans"] = extraction_result.marriage_plans
+
+        if extraction_result.family_plans is not None:
+            if existing_profile.get("family_plans") != extraction_result.family_plans:
+                new_items["family_plans"] = extraction_result.family_plans
+                changes["family_plans"] = extraction_result.family_plans
+
+        if extraction_result.career_goals is not None:
+            if existing_profile.get("career_goals") != extraction_result.career_goals:
+                new_items["career_goals"] = extraction_result.career_goals
+                changes["career_goals"] = extraction_result.career_goals
+
+        if extraction_result.retirement_age is not None:
+            if existing_profile.get("retirement_age") != extraction_result.retirement_age:
+                new_items["retirement_age"] = extraction_result.retirement_age
+                changes["retirement_age"] = extraction_result.retirement_age
+
+        if extraction_result.retirement_vision is not None:
+            if existing_profile.get("retirement_vision") != extraction_result.retirement_vision:
+                new_items["retirement_vision"] = extraction_result.retirement_vision
+                changes["retirement_vision"] = extraction_result.retirement_vision
+
+        if extraction_result.lifestyle_goals is not None:
+            if existing_profile.get("lifestyle_goals") != extraction_result.lifestyle_goals:
+                new_items["lifestyle_goals"] = extraction_result.lifestyle_goals
+                changes["lifestyle_goals"] = extraction_result.lifestyle_goals
+
         # If we have new items, add them to the profile
         if new_items:
             # Use add_items() to ADD new data incrementally (not replace)
@@ -329,34 +409,61 @@ Extract ONLY NEW financial information that is not already in the existing profi
     def _format_existing_profile(self, profile: Dict[str, Any]) -> str:
         """Format existing profile for agent context."""
         parts = []
-        
+
+        # Persona fields (Phase 1)
+        if profile.get("age") is not None:
+            parts.append(f"Age: {profile['age']}")
+
+        if profile.get("relationship_status"):
+            parts.append(f"Relationship status: {profile['relationship_status']}")
+
+        if profile.get("has_kids") is not None:
+            kids_str = "Has kids" if profile["has_kids"] else "No kids"
+            if profile.get("number_of_kids"):
+                kids_str += f" ({profile['number_of_kids']})"
+            parts.append(kids_str)
+
+        if profile.get("career"):
+            parts.append(f"Career: {profile['career']}")
+
+        if profile.get("location"):
+            parts.append(f"Location: {profile['location']}")
+
+        # Life aspirations (Phase 2)
+        if profile.get("family_plans"):
+            parts.append(f"Family plans: {profile['family_plans']}")
+
+        if profile.get("retirement_age"):
+            parts.append(f"Target retirement age: {profile['retirement_age']}")
+
+        # Financial data
         if profile.get("goals"):
             goals_desc = [g.get("description", "Unknown goal") for g in profile["goals"]]
             parts.append(f"Goals already extracted: {', '.join(goals_desc)}")
-        
+
         if profile.get("assets"):
             assets_desc = [f"{a.get('asset_type', 'asset')}: {a.get('description', 'Unknown')}" for a in profile["assets"]]
             parts.append(f"Assets already extracted: {', '.join(assets_desc)}")
-        
+
         if profile.get("liabilities"):
             liabilities_desc = [f"{l.get('liability_type', 'liability')}: {l.get('description', 'Unknown')}" for l in profile["liabilities"]]
             parts.append(f"Liabilities already extracted: {', '.join(liabilities_desc)}")
-        
+
         if profile.get("insurance"):
             insurance_desc = [i.get("insurance_type", "Unknown") for i in profile["insurance"]]
             parts.append(f"Insurance already extracted: {', '.join(insurance_desc)}")
-        
+
         if profile.get("superannuation"):
             super_desc = [f"{s.get('fund_name', 'Unknown')}: ${s.get('balance', 0):,.2f}" for s in profile["superannuation"]]
             parts.append(f"Superannuation already extracted: {', '.join(super_desc)}")
-        
+
         if profile.get("income") is not None:
             parts.append(f"Income: ${profile['income']:,.2f} annually")
-        
+
         if profile.get("expenses") is not None:
             parts.append(f"Expenses: ${profile['expenses']:,.2f} monthly")
-        
+
         if profile.get("risk_tolerance"):
             parts.append(f"Risk tolerance: {profile['risk_tolerance']}")
-        
+
         return "\n".join(parts) if parts else "No existing profile data."

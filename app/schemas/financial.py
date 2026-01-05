@@ -76,10 +76,26 @@ class Superannuation(BaseModel):
 class FinancialProfile(BaseModel):
     """Complete financial profile - all data linked to user."""
     model_config = ConfigDict(extra='ignore')
-    
+
     id: Optional[int] = None
     username: str  # This is the user's email
-    
+
+    # Persona data (Phase 1 discovery)
+    age: Optional[int] = None
+    relationship_status: Optional[str] = None  # single, partnered, married, divorced, widowed
+    has_kids: Optional[bool] = None
+    number_of_kids: Optional[int] = None
+    career: Optional[str] = None  # Job/profession description
+    location: Optional[str] = None  # City/region
+
+    # Life aspirations (Phase 2 discovery)
+    marriage_plans: Optional[str] = None  # Planning to marry, timeline
+    family_plans: Optional[str] = None  # Planning kids, more kids, timeline
+    career_goals: Optional[str] = None  # Career trajectory, plans
+    retirement_age: Optional[int] = None  # Target retirement age
+    retirement_vision: Optional[str] = None  # What retirement looks like
+    lifestyle_goals: Optional[str] = None  # Lifestyle aspirations
+
     # Financial flow data (stored on user)
     income: Optional[float] = None  # Annual income
     monthly_income: Optional[float] = None
