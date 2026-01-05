@@ -99,6 +99,7 @@ class Liability(Base):
     amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     monthly_payment: Mapped[float | None] = mapped_column(Float, nullable=True)
     interest_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tenure_months: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Remaining loan term
     institution: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -118,6 +119,7 @@ class Liability(Base):
             "amount": self.amount,
             "monthly_payment": self.monthly_payment,
             "interest_rate": self.interest_rate,
+            "tenure_months": self.tenure_months,
             "institution": self.institution,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

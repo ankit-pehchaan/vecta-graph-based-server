@@ -116,13 +116,24 @@ class FinancialProfileRepository(IFinancialProfileRepository):
 
         # Add liabilities
         for liability_data in profile_data.get("liabilities", []):
+            # Calculate interest rate if missing but we have EMI, principal, tenure
+            interest_rate = liability_data.get("interest_rate")
+            if not interest_rate:
+                amount = liability_data.get("amount")
+                emi = liability_data.get("monthly_payment")
+                tenure = liability_data.get("tenure_months")
+                if amount and emi and tenure:
+                    from app.services.finance_calculators import estimate_interest_rate
+                    interest_rate = estimate_interest_rate(amount, emi, tenure)
+
             liability = Liability(
                 user_id=user_id,
                 liability_type=liability_data.get("liability_type", "other"),
                 description=liability_data.get("description", ""),
                 amount=liability_data.get("amount"),
                 monthly_payment=liability_data.get("monthly_payment"),
-                interest_rate=liability_data.get("interest_rate"),
+                interest_rate=interest_rate,
+                tenure_months=liability_data.get("tenure_months"),
                 institution=liability_data.get("institution"),
             )
             self._session.add(liability)

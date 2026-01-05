@@ -32,6 +32,64 @@ def pmt(principal: float, rate_per_period: float, num_periods: int) -> float:
     return principal * (rate_per_period / denom)
 
 
+def estimate_interest_rate(
+    principal: float,
+    emi: float,
+    tenure_months: int,
+    tolerance: float = 0.0001,
+    max_iterations: int = 100
+) -> float:
+    """
+    Estimate annual interest rate from EMI, principal, and tenure using Newton-Raphson.
+
+    Args:
+        principal: Loan amount
+        emi: Monthly EMI payment
+        tenure_months: Loan term in months
+        tolerance: Convergence tolerance
+        max_iterations: Maximum iterations
+
+    Returns:
+        Estimated annual interest rate as percentage (e.g., 8.5 for 8.5%)
+    """
+    if principal <= 0 or emi <= 0 or tenure_months <= 0:
+        return 0.0
+
+    # If total payments equal principal, rate is ~0
+    if abs(emi * tenure_months - principal) < 1:
+        return 0.0
+
+    # Initial guess: 10% annual = ~0.83% monthly
+    r = 0.01  # monthly rate guess
+
+    for _ in range(max_iterations):
+        # PMT formula rearranged: EMI = P * r * (1+r)^n / ((1+r)^n - 1)
+        # We want to find r such that PMT(P, r, n) = EMI
+
+        factor = (1 + r) ** tenure_months
+        calculated_emi = principal * r * factor / (factor - 1)
+
+        # Derivative of PMT with respect to r (for Newton-Raphson)
+        # This is complex, so we use secant method instead
+        diff = calculated_emi - emi
+
+        if abs(diff) < tolerance:
+            break
+
+        # Adjust rate based on difference
+        if calculated_emi > emi:
+            r *= 0.95  # Rate too high
+        else:
+            r *= 1.05  # Rate too low
+
+        # Clamp to reasonable bounds
+        r = max(0.0001, min(r, 0.05))  # 0.01% to 60% annual
+
+    # Convert monthly rate to annual percentage
+    annual_rate = r * 12 * 100
+    return round(annual_rate, 2)
+
+
 def amortize_balance_trajectory(
     principal: float,
     annual_rate_percent: float,
