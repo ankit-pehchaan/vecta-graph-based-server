@@ -1386,24 +1386,55 @@ Provide your complete assessment."""
         profile: Dict[str, Any]
     ) -> ContextAssessment:
         """
-        HARD ENFORCEMENT: Ensure persona questions come before financial questions.
+        HARD ENFORCEMENT: Complete discovery before goal-specific questions.
 
-        Order: Age → Relationship → Career → Life Aspirations → Finances
+        Order:
+        1. Persona: Age → Relationship → Career
+        2. Life Aspirations: Marriage/Family plans
+        3. Financial Foundation: Income → Savings → Debts
+        4. Other Goals: Ask about other financial goals
+        5. ONLY THEN: Goal-specific discussion
 
-        This overrides any LLM decision that tries to skip persona.
+        This overrides any LLM decision that tries to skip phases.
         """
-        # What do we know?
+        # ===== PERSONA PHASE =====
         age_known = profile.get('age') is not None
         relationship_known = profile.get('relationship_status') is not None
         career_known = profile.get('career') is not None
+        persona_complete = age_known and relationship_known and career_known
 
-        # Life aspirations - at least marriage plans or family plans
+        # ===== LIFE ASPIRATIONS PHASE =====
         marriage_known = profile.get('marriage_plans') is not None
-        family_known = profile.get('family_plans') is not None
-        life_aspirations_started = marriage_known or family_known
+        family_known = profile.get('family_plans') is not None or profile.get('has_kids') is not None
+        life_aspirations_complete = marriage_known or family_known
 
-        # Financial fields that should NOT be asked during persona
-        financial_fields = ("income", "savings", "expenses", "debts", "assets", "liabilities", "monthly_income")
+        # ===== FINANCIAL FOUNDATION PHASE =====
+        income_known = profile.get('income') is not None or profile.get('monthly_income') is not None
+        # For savings, check if we have any assets recorded
+        assets = profile.get('assets', [])
+        savings_known = len(assets) > 0
+        # For debts, check liabilities
+        liabilities = profile.get('liabilities', [])
+        debts_asked = len(liabilities) > 0  # If they have debts, we know. If empty after asking, that's OK too.
+        # Financial foundation: need income, savings, and debts info
+        financial_foundation_complete = income_known and savings_known
+
+        # ===== OTHER GOALS =====
+        goals = profile.get('goals', [])
+        multiple_goals_explored = len(goals) > 1  # More than just the first mentioned goal
+
+        # Goal-specific fields that should NOT be asked until ready
+        goal_specific_fields = ("budget", "deposit", "timeline", "suburbs", "property_type", "borrowing_capacity",
+                                "investment_strategy", "goal_planning", "next_steps", "action_plan")
+
+        # Is the LLM trying to jump to goal-specific questions?
+        trying_goal_specific = (
+            assessment.target_field in goal_specific_fields or
+            assessment.next_action in ("goal_planning", "dive_into_goal", "reality_check") or
+            assessment.ready_for_goal_planning
+        )
+
+        # ===== ENFORCEMENT RULES =====
 
         # RULE 1: Age MUST be first
         if not age_known:
@@ -1412,35 +1443,84 @@ Provide your complete assessment."""
             assessment.current_phase = "persona"
             assessment.next_action = "probe_gap"
             assessment.discovery_completeness = "early"
-            if "Don't ask about income/savings/debts yet" not in assessment.things_to_avoid:
-                assessment.things_to_avoid.append("Don't ask about income/savings/debts yet")
+            assessment.ready_for_goal_planning = False
+            assessment.things_to_avoid.append("Don't discuss the goal yet")
             return assessment
 
-        # RULE 2: Relationship before finances
+        # RULE 2: Relationship next
         if not relationship_known:
-            if assessment.target_field in financial_fields:
-                logger.warning("ENFORCEMENT: Relationship unknown - switching from financial to relationship")
-                assessment.target_field = "relationship_status"
-                assessment.current_phase = "persona"
+            logger.warning("ENFORCEMENT: Relationship unknown - forcing target_field='relationship_status'")
+            assessment.target_field = "relationship_status"
+            assessment.current_phase = "persona"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "early"
+            assessment.ready_for_goal_planning = False
             return assessment
 
-        # RULE 3: Career before finances
+        # RULE 3: Career next
         if not career_known:
-            if assessment.target_field in financial_fields:
-                logger.warning("ENFORCEMENT: Career unknown - switching from financial to career")
-                assessment.target_field = "career"
-                assessment.current_phase = "persona"
+            logger.warning("ENFORCEMENT: Career unknown - forcing target_field='career'")
+            assessment.target_field = "career"
+            assessment.current_phase = "persona"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "early"
+            assessment.ready_for_goal_planning = False
             return assessment
 
-        # RULE 4: At least one life aspiration before finances
-        if not life_aspirations_started:
-            if assessment.target_field in financial_fields:
-                logger.warning("ENFORCEMENT: Life aspirations unknown - switching to marriage_plans")
-                assessment.target_field = "marriage_plans"
-                assessment.current_phase = "life_aspirations"
+        # RULE 4: Life aspirations before finances (marriage/family plans)
+        if not life_aspirations_complete:
+            logger.warning("ENFORCEMENT: Life aspirations incomplete - asking about future plans")
+            assessment.target_field = "marriage_plans" if not marriage_known else "family_plans"
+            assessment.current_phase = "life_aspirations"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "partial"
+            assessment.ready_for_goal_planning = False
             return assessment
 
-        # Persona and life aspirations covered - finances are OK now
+        # RULE 5: Income before goal discussion
+        if not income_known:
+            logger.warning("ENFORCEMENT: Income unknown - forcing target_field='income'")
+            assessment.target_field = "income"
+            assessment.current_phase = "financial_foundation"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "partial"
+            assessment.ready_for_goal_planning = False
+            return assessment
+
+        # RULE 6: Savings before goal discussion
+        if not savings_known:
+            logger.warning("ENFORCEMENT: Savings unknown - forcing target_field='savings'")
+            assessment.target_field = "savings"
+            assessment.current_phase = "financial_foundation"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "partial"
+            assessment.ready_for_goal_planning = False
+            return assessment
+
+        # RULE 7: Debts before goal discussion (only if no liabilities recorded yet)
+        if not debts_asked:
+            logger.warning("ENFORCEMENT: Debts unknown - forcing target_field='debts'")
+            assessment.target_field = "debts"
+            assessment.current_phase = "financial_foundation"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "partial"
+            assessment.ready_for_goal_planning = False
+            return assessment
+
+        # RULE 8: Ask about other goals before diving into the mentioned goal
+        if not multiple_goals_explored and trying_goal_specific:
+            logger.warning("ENFORCEMENT: Only one goal known - asking about other goals first")
+            assessment.target_field = "other_goals"
+            assessment.current_phase = "goals_overview"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "substantial"
+            assessment.ready_for_goal_planning = False
+            return assessment
+
+        # All phases complete - goal discussion is now OK
+        logger.info("ENFORCEMENT: All phases complete - goal-specific discussion allowed")
+        assessment.discovery_completeness = "comprehensive"
+        assessment.ready_for_goal_planning = True
         return assessment
 
     async def _generate_response_from_assessment(
@@ -1478,7 +1558,7 @@ ASSESSMENT RESULTS:
 """
 
         # Check if we're still in discovery phases (1-3)
-        in_discovery = assessment.current_phase in ("persona", "life_aspirations", "financial_foundation")
+        in_discovery = assessment.current_phase in ("persona", "life_aspirations", "financial_foundation", "goals_overview")
 
         no_goal_ref_rule = """
 CRITICAL - NO GOAL REFERENCES:
@@ -1489,6 +1569,21 @@ BAD: "Any savings? That'll help with the property."
 GOOD: "Any savings built up?"
 If you're about to type the goal word (house, villa, property, etc.), DELETE IT.
 """ if in_discovery else ""
+
+        # Natural phrasing guidance for each target field
+        field_guidance = {
+            "age": "Ask their age naturally. Example: 'How old are you?' or 'What's your age?'",
+            "relationship_status": "Ask if solo or partnered. Example: 'Going solo or with a partner?' or 'Is there a partner involved?'",
+            "career": "Ask about work. Example: 'What do you do for work?' or 'What's your work situation?'",
+            "marriage_plans": "Ask about future relationship plans. Example: 'Any plans to settle down with someone?' or 'What's on the horizon relationship-wise?'",
+            "family_plans": "Ask about kids/family. Example: 'Kids in the picture, now or later?' or 'Any thoughts on family?'",
+            "income": "Ask about earnings. Example: 'What's your income like?' or 'What do you earn roughly?'",
+            "savings": "Ask about savings. Example: 'Got any savings built up?' or 'What's your savings situation?'",
+            "debts": "Ask about debts. Example: 'Any debts to speak of?' or 'Carrying any debts?'",
+            "other_goals": "Ask about other financial goals. Example: 'Anything else on your financial wishlist?' or 'Besides that, any other big financial goals?'",
+        }
+
+        field_hint = field_guidance.get(assessment.target_field, "")
 
         prompt = f"""You are Jamie responding to this user message.
 
@@ -1501,12 +1596,13 @@ CURRENT PROFILE:
 
 IMPORTANT:
 - Follow the next_action directive: {assessment.next_action}
-- If target_field is specified, ask about: {assessment.target_field}
+- Ask about: {assessment.target_field}
+- {field_hint}
 - Use {assessment.conversation_tone} tone
 - Keep response {assessment.response_length}
-- ONE question maximum
-- Don't ask multiple questions
-- If user mentioned a goal, acknowledge it warmly but redirect to persona questions
+- ONE question maximum - just ask the one thing
+- Acknowledge what they just said briefly, then ask your one question
+- Don't sound like an interview - be conversational
 {no_goal_ref_rule}
 Generate your response as Jamie:"""
 
