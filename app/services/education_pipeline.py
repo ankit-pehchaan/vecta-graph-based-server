@@ -1321,6 +1321,11 @@ Return structured approval with explicit boolean checks."""
         agent = self._get_context_assessor(username)
         profile_summary = self._format_profile_summary(profile)
 
+        # Check what persona fields are missing for enforcement
+        age_known = profile.get('age') is not None
+        relationship_known = profile.get('relationship_status') is not None
+        career_known = profile.get('career') is not None
+
         prompt = f"""Assess this user message and determine intent, validation status, and strategy.
 
 USER MESSAGE: {user_message}
@@ -1330,10 +1335,21 @@ CURRENT PROFILE:
 
 GOALS MENTIONED SO FAR: {', '.join(g.get('description', 'Unknown') for g in profile.get('goals', [])) if profile.get('goals') else 'None yet'}
 
-Remember:
-- If we don't know the user's age and they mentioned a goal → target_field = "age"
-- Follow phase order: Persona → Life Aspirations → Finances → Goals
-- One question per response
+CRITICAL RULES:
+1. AGE MUST BE FIRST: If age is unknown → target_field = "age", current_phase = "persona"
+2. PERSONA BEFORE FINANCES: Don't ask about income/savings/debts until we know age, relationship, career
+3. Phase order: Persona (age, relationship, career) → Life Aspirations → Finances → Goals
+4. One question per response
+
+WHAT WE KNOW:
+- Age: {"KNOWN" if age_known else "UNKNOWN - MUST ASK THIS FIRST"}
+- Relationship: {"KNOWN" if relationship_known else "UNKNOWN"}
+- Career: {"KNOWN" if career_known else "UNKNOWN"}
+
+If age is UNKNOWN, your output MUST have:
+- current_phase = "persona"
+- target_field = "age"
+- next_action = "probe_gap"
 
 Provide your complete assessment."""
 
@@ -1348,6 +1364,9 @@ Provide your complete assessment."""
                 result = ContextAssessment()
 
             if isinstance(result, ContextAssessment):
+                # HARD ENFORCEMENT: Persona must be complete before financial questions
+                result = self._enforce_persona_first(result, profile)
+
                 logger.info(f"Intent: {result.primary_intent}")
                 logger.info(f"Phase: {result.current_phase}")
                 logger.info(f"Action: {result.next_action} → {result.target_field}")
@@ -1360,6 +1379,69 @@ Provide your complete assessment."""
         except Exception as e:
             logger.error(f"Context assessment error: {e}")
             return ContextAssessment()
+
+    def _enforce_persona_first(
+        self,
+        assessment: ContextAssessment,
+        profile: Dict[str, Any]
+    ) -> ContextAssessment:
+        """
+        HARD ENFORCEMENT: Ensure persona questions come before financial questions.
+
+        Order: Age → Relationship → Career → Life Aspirations → Finances
+
+        This overrides any LLM decision that tries to skip persona.
+        """
+        # What do we know?
+        age_known = profile.get('age') is not None
+        relationship_known = profile.get('relationship_status') is not None
+        career_known = profile.get('career') is not None
+
+        # Life aspirations - at least marriage plans or family plans
+        marriage_known = profile.get('marriage_plans') is not None
+        family_known = profile.get('family_plans') is not None
+        life_aspirations_started = marriage_known or family_known
+
+        # Financial fields that should NOT be asked during persona
+        financial_fields = ("income", "savings", "expenses", "debts", "assets", "liabilities", "monthly_income")
+
+        # RULE 1: Age MUST be first
+        if not age_known:
+            logger.warning("ENFORCEMENT: Age unknown - forcing target_field='age'")
+            assessment.target_field = "age"
+            assessment.current_phase = "persona"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "early"
+            if "Don't ask about income/savings/debts yet" not in assessment.things_to_avoid:
+                assessment.things_to_avoid.append("Don't ask about income/savings/debts yet")
+            return assessment
+
+        # RULE 2: Relationship before finances
+        if not relationship_known:
+            if assessment.target_field in financial_fields:
+                logger.warning("ENFORCEMENT: Relationship unknown - switching from financial to relationship")
+                assessment.target_field = "relationship_status"
+                assessment.current_phase = "persona"
+            return assessment
+
+        # RULE 3: Career before finances
+        if not career_known:
+            if assessment.target_field in financial_fields:
+                logger.warning("ENFORCEMENT: Career unknown - switching from financial to career")
+                assessment.target_field = "career"
+                assessment.current_phase = "persona"
+            return assessment
+
+        # RULE 4: At least one life aspiration before finances
+        if not life_aspirations_started:
+            if assessment.target_field in financial_fields:
+                logger.warning("ENFORCEMENT: Life aspirations unknown - switching to marriage_plans")
+                assessment.target_field = "marriage_plans"
+                assessment.current_phase = "life_aspirations"
+            return assessment
+
+        # Persona and life aspirations covered - finances are OK now
+        return assessment
 
     async def _generate_response_from_assessment(
         self,
