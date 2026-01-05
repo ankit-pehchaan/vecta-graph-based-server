@@ -30,6 +30,7 @@ from app.core.prompts import (
     OUTPUT_QA_PROMPT,
     FINANCIAL_ADVISER_SYSTEM_PROMPT,
     PROFILE_EXTRACTOR_SYSTEM_PROMPT,
+    CONTEXT_ASSESSMENT_PROMPT,
 )
 from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.repositories.user_repository import UserRepository
@@ -242,6 +243,78 @@ class OutputQAResult(BaseModel):
 
 
 # =============================================================================
+# OPTIMIZED COMBINED SCHEMA (for 3-stage pipeline)
+# =============================================================================
+
+class ContextAssessment(BaseModel):
+    """
+    Combined output replacing Intent + Validation + Strategy stages.
+    Used by the optimized 3-stage pipeline for lower latency.
+    """
+    # Intent fields
+    primary_intent: str = Field(
+        default="sharing_info",
+        description="Primary intent: sharing_persona, sharing_life_aspirations, sharing_financial, stating_goal, asking_question, expressing_emotion, pushing_back, small_talk, unclear"
+    )
+    goals_mentioned: List[str] = Field(
+        default_factory=list,
+        description="ALL goals mentioned - noted for later, not acted on immediately"
+    )
+    user_engagement: str = Field(
+        default="engaged",
+        description="Engagement level: engaged, brief, resistant"
+    )
+    trying_to_skip_ahead: bool = Field(
+        default=False,
+        description="Are they jumping to advice before discovery?"
+    )
+    detected_emotion: Optional[str] = Field(
+        default=None,
+        description="Emotion: anxious, excited, frustrated, overwhelmed, confused, defensive, neutral"
+    )
+
+    # Validation fields
+    current_phase: str = Field(
+        default="persona",
+        description="Which phase: persona, life_aspirations, financial_foundation, goals_overview, ready_for_depth"
+    )
+    discovery_completeness: str = Field(
+        default="early",
+        description="How complete: early, partial, substantial, comprehensive"
+    )
+    priority_gaps: List[str] = Field(
+        default_factory=list,
+        description="Most important gaps to fill next (2-3 items)"
+    )
+    ready_for_goal_planning: bool = Field(
+        default=False,
+        description="TRUE only when Phases 1-3 complete"
+    )
+
+    # Strategy fields
+    next_action: str = Field(
+        default="probe_gap",
+        description="Action: probe_gap, clarify_vague, acknowledge_emotion, redirect_to_discovery, pivot_to_education, handle_resistance"
+    )
+    target_field: Optional[str] = Field(
+        default=None,
+        description="Which field to probe: age, relationship_status, kids_family, career, marriage_plans, family_planning, career_trajectory, retirement_vision, income, etc."
+    )
+    conversation_tone: str = Field(
+        default="warm",
+        description="Tone: warm, direct, gentle, encouraging, grounding"
+    )
+    response_length: str = Field(
+        default="medium",
+        description="Length: brief (1-3 sentences), medium (3-5), detailed"
+    )
+    things_to_avoid: List[str] = Field(
+        default_factory=list,
+        description="Things NOT to do in this response"
+    )
+
+
+# =============================================================================
 # PIPELINE ORCHESTRATOR
 # =============================================================================
 
@@ -381,6 +454,21 @@ class EducationPipeline:
                 debug_mode=False
             )
             logger.debug(f"Created Output QA agent for {username} (model: {model_id})")
+        return self._agents[key]
+
+    def _get_context_assessor(self, username: str) -> Agent:
+        """Get or create Context Assessment agent (combined intent+validation+strategy)."""
+        key = f"context_assessor_{username}"
+        if key not in self._agents:
+            self._agents[key] = Agent(
+                name="Context Assessor",
+                model=OpenAIChat(id=self.FAST_MODEL),  # Always use fast model
+                instructions=CONTEXT_ASSESSMENT_PROMPT,
+                output_schema=ContextAssessment,
+                markdown=False,
+                debug_mode=False
+            )
+            logger.debug(f"Created Context Assessor agent for {username} (model: {self.FAST_MODEL})")
         return self._agents[key]
 
     # -------------------------------------------------------------------------
@@ -1125,6 +1213,213 @@ Return structured approval with explicit boolean checks."""
             "extracted_data": extracted_data,
             "duration_seconds": duration
         }
+
+    async def process_message_optimized(
+        self,
+        username: str,
+        user_message: str,
+        user_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Optimized 3-stage pipeline for lowest latency.
+
+        Architecture:
+        - Stage 1: Context Assessment (combined intent + validation + strategy) - gpt-4o-mini
+        - Stage 2: Data Extraction (parallel with Stage 1) - gpt-4o-mini
+        - Stage 3: Response Generation (Jamie) - gpt-4o
+
+        Optimizations:
+        - Combines 3 LLM calls into 1 (intent + validation + strategy → context assessment)
+        - Runs context assessment + extraction in parallel
+        - No Output QA (can be run in background separately)
+        - User name passed in to avoid DB lookup
+
+        Expected latency: ~4-5s (down from 10-15s)
+        """
+        logger.info("=" * 60)
+        logger.info("EDUCATION PIPELINE START (OPTIMIZED 3-STAGE)")
+        logger.info(f"User: {username}")
+        logger.info(f"Message: {user_message}")
+        logger.info("=" * 60)
+
+        start_time = datetime.now(timezone.utc)
+
+        # Get existing profile
+        profile = {}
+        async for session in self.db_manager.get_session():
+            profile_repo = FinancialProfileRepository(session)
+            profile = await profile_repo.get_by_username(username) or {}
+
+        # =====================================================================
+        # PARALLEL: Stage 1 (Context Assessment) + Stage 2 (Extraction)
+        # =====================================================================
+        parallel_start = datetime.now(timezone.utc)
+
+        assessment_task = asyncio.create_task(
+            self._assess_context(username, user_message, profile)
+        )
+        extraction_task = asyncio.create_task(
+            self._stage_2_extract_data(username, user_message, profile)
+        )
+
+        assessment, extracted_data = await asyncio.gather(assessment_task, extraction_task)
+
+        parallel_duration = (datetime.now(timezone.utc) - parallel_start).total_seconds()
+        logger.info(f"Parallel Assessment+Extraction Duration: {parallel_duration:.2f}s")
+
+        # Refresh profile if extraction updated it
+        if extracted_data:
+            async for session in self.db_manager.get_session():
+                profile_repo = FinancialProfileRepository(session)
+                profile = await profile_repo.get_by_username(username) or {}
+
+        # =====================================================================
+        # Stage 3: Response Generation (Jamie)
+        # =====================================================================
+        response = await self._generate_response_from_assessment(
+            username, user_message, assessment, profile, user_name
+        )
+
+        end_time = datetime.now(timezone.utc)
+        duration = (end_time - start_time).total_seconds()
+
+        logger.info("=" * 60)
+        logger.info("EDUCATION PIPELINE COMPLETE (OPTIMIZED 3-STAGE)")
+        logger.info(f"Total Duration: {duration:.2f}s")
+        logger.info("=" * 60)
+
+        return {
+            "response": response,
+            "assessment": assessment.model_dump(),
+            "extracted_data": extracted_data,
+            "duration_seconds": duration
+        }
+
+    async def _assess_context(
+        self,
+        username: str,
+        user_message: str,
+        profile: Dict[str, Any]
+    ) -> ContextAssessment:
+        """
+        Combined context assessment (replaces intent + validation + strategy).
+        Single LLM call that outputs all three components.
+        """
+        logger.info("-" * 40)
+        logger.info("CONTEXT ASSESSMENT")
+        logger.info("-" * 40)
+
+        agent = self._get_context_assessor(username)
+        profile_summary = self._format_profile_summary(profile)
+
+        prompt = f"""Assess this user message and determine intent, validation status, and strategy.
+
+USER MESSAGE: {user_message}
+
+CURRENT PROFILE:
+{profile_summary}
+
+GOALS MENTIONED SO FAR: {', '.join(profile.get('goals', [])) if profile.get('goals') else 'None yet'}
+
+Remember:
+- If we don't know the user's age and they mentioned a goal → target_field = "age"
+- Follow phase order: Persona → Life Aspirations → Finances → Goals
+- One question per response
+
+Provide your complete assessment."""
+
+        try:
+            response = await agent.arun(prompt) if hasattr(agent, 'arun') else agent.run(prompt)
+
+            if hasattr(response, 'content') and response.content:
+                result = response.content
+            elif hasattr(response, 'parsed') and response.parsed:
+                result = response.parsed
+            else:
+                result = ContextAssessment()
+
+            if isinstance(result, ContextAssessment):
+                logger.info(f"Intent: {result.primary_intent}")
+                logger.info(f"Phase: {result.current_phase}")
+                logger.info(f"Action: {result.next_action} → {result.target_field}")
+                logger.info(f"Completeness: {result.discovery_completeness}")
+                return result
+            else:
+                logger.warning("Context assessment returned unexpected type, using defaults")
+                return ContextAssessment()
+
+        except Exception as e:
+            logger.error(f"Context assessment error: {e}")
+            return ContextAssessment()
+
+    async def _generate_response_from_assessment(
+        self,
+        username: str,
+        user_message: str,
+        assessment: ContextAssessment,
+        profile: Dict[str, Any],
+        user_name: Optional[str] = None
+    ) -> str:
+        """
+        Generate Jamie's response using context assessment.
+        Similar to _stage_5_generate_response but uses ContextAssessment.
+        """
+        logger.info("-" * 40)
+        logger.info("RESPONSE GENERATION (from assessment)")
+        logger.info("-" * 40)
+
+        agent = self._get_conversation_agent(username, user_name)
+        profile_summary = self._format_profile_summary(profile)
+
+        # Build strategy context from assessment
+        strategy_context = f"""
+ASSESSMENT RESULTS:
+- User Intent: {assessment.primary_intent}
+- Current Phase: {assessment.current_phase}
+- Discovery Completeness: {assessment.discovery_completeness}
+- Next Action: {assessment.next_action}
+- Target Field: {assessment.target_field or 'None specified'}
+- Tone: {assessment.conversation_tone}
+- Length: {assessment.response_length}
+- Priority Gaps: {', '.join(assessment.priority_gaps) if assessment.priority_gaps else 'None'}
+- Things to Avoid: {', '.join(assessment.things_to_avoid) if assessment.things_to_avoid else 'None'}
+- Ready for Goal Planning: {assessment.ready_for_goal_planning}
+"""
+
+        prompt = f"""You are Jamie responding to this user message.
+
+USER MESSAGE: {user_message}
+
+{strategy_context}
+
+CURRENT PROFILE:
+{profile_summary}
+
+IMPORTANT:
+- Follow the next_action directive: {assessment.next_action}
+- If target_field is specified, ask about: {assessment.target_field}
+- Use {assessment.conversation_tone} tone
+- Keep response {assessment.response_length}
+- ONE question maximum
+- Don't ask multiple questions
+- If user mentioned a goal, acknowledge it warmly but redirect to persona questions
+
+Generate your response as Jamie:"""
+
+        try:
+            response = await agent.arun(prompt) if hasattr(agent, 'arun') else agent.run(prompt)
+
+            if hasattr(response, 'content'):
+                result = response.content
+            else:
+                result = str(response)
+
+            logger.info(f"Response length: {len(result)} chars")
+            return result
+
+        except Exception as e:
+            logger.error(f"Response generation error: {e}")
+            return "I'm having a bit of trouble right now. Could you say that again?"
 
     # -------------------------------------------------------------------------
     # HELPER METHODS

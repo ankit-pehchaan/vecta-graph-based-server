@@ -1,6 +1,7 @@
 import json
 import asyncio
 import logging
+import uuid
 from typing import AsyncGenerator, Optional, Set, Tuple
 from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
@@ -12,6 +13,7 @@ from app.services.intelligence_service import IntelligenceService
 from app.services.document_agent_service import DocumentAgentService
 from app.services.visualization_service import VisualizationService
 from app.repositories.financial_profile_repository import FinancialProfileRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.advice import (
     UserMessage,
     AgentResponse,
@@ -24,6 +26,7 @@ from app.schemas.advice import (
     UIActionsMessage,
     UIAction,
     DocumentUploadPrompt,
+    ResponseCorrection,
 )
 from app.schemas.financial import FinancialProfile
 from app.core.config import settings
@@ -347,7 +350,6 @@ class AdviceService:
                     chunk = full_response[i:i + chunk_size]
                     if chunk:
                         yield chunk
-                        await asyncio.sleep(0.01)  # Small delay for smooth streaming
             else:
                 # Fallback: sync run
                 response = agent.run(user_message)
@@ -358,7 +360,6 @@ class AdviceService:
                     chunk = full_response[i:i + chunk_size]
                     if chunk:
                         yield chunk
-                        await asyncio.sleep(0.01)
 
         except Exception as e:
             logger.error(f"[STREAM] Error in agent streaming: {e}")
@@ -373,18 +374,17 @@ class AdviceService:
         user_message: str
     ) -> AsyncGenerator[dict, None]:
         """
-        Process user message through the education pipeline and stream response.
+        Process user message through the optimized 3-stage pipeline and stream response.
 
-        Uses the full 6-stage pipeline:
-        1. Intent Classification
-        2. Data Extraction
-        3. QA/Validation
-        4. Strategy/Routing
-        5. Response Generation (Jamie)
-        6. Output QA
+        Uses the optimized pipeline:
+        1. Context Assessment (combined intent + validation + strategy) - PARALLEL with 2
+        2. Data Extraction - PARALLEL with 1
+        3. Response Generation (Jamie)
+
+        Background: Output QA runs after response is sent, sends corrections if needed.
 
         Yields:
-            Agent response chunks, profile updates, and pipeline debug info
+            Agent response chunks, profile updates
         """
         logger.info(f"[PROCESS] Processing message from {username}: {user_message[:50]}...")
 
@@ -397,15 +397,25 @@ class AdviceService:
 
             # Use education pipeline if available
             if self.education_pipeline:
-                logger.info("[PROCESS] Using EducationPipeline for processing")
+                logger.info("[PROCESS] Using EducationPipeline (OPTIMIZED 3-STAGE) for processing")
 
-                # Process through pipeline
-                pipeline_result = await self.education_pipeline.process_message(
+                # Get user's name for personalization (cache this in session ideally)
+                user_name = None
+                async for session in self.db_manager.get_session():
+                    user_repo = UserRepository(session)
+                    user = await user_repo.get_by_email(username)
+                    if user:
+                        user_name = user.get("name")
+
+                # Process through OPTIMIZED pipeline
+                pipeline_result = await self.education_pipeline.process_message_optimized(
                     username,
-                    user_message
+                    user_message,
+                    user_name=user_name
                 )
 
                 full_response = pipeline_result["response"]
+                response_id = str(uuid.uuid4())  # Unique ID for this response
 
                 # Stream the response
                 chunk_size = 5
@@ -418,7 +428,6 @@ class AdviceService:
                             timestamp=datetime.now(timezone.utc).isoformat()
                         )
                         yield agent_response.model_dump()
-                        await asyncio.sleep(0.01)
 
                 # Mark final chunk as complete
                 final_response = AgentResponse(
@@ -428,10 +437,11 @@ class AdviceService:
                 )
                 yield final_response.model_dump()
 
-                # Pipeline debug info - server logs only, not sent to client
-                logger.debug(f"[PIPELINE] Intent: {pipeline_result['intent'].get('primary_intent')}")
-                logger.debug(f"[PIPELINE] Phase: {pipeline_result['validation'].get('current_phase')}")
-                logger.debug(f"[PIPELINE] Strategy: {pipeline_result['strategy'].get('next_action')}")
+                # Pipeline debug info - server logs only
+                assessment = pipeline_result.get("assessment", {})
+                logger.debug(f"[PIPELINE] Intent: {assessment.get('primary_intent')}")
+                logger.debug(f"[PIPELINE] Phase: {assessment.get('current_phase')}")
+                logger.debug(f"[PIPELINE] Action: {assessment.get('next_action')}")
                 logger.debug(f"[PIPELINE] Duration: {pipeline_result['duration_seconds']:.2f}s")
 
                 # Update conversation context with agent response
@@ -451,6 +461,18 @@ class AdviceService:
                             timestamp=datetime.now(timezone.utc).isoformat()
                         )
                         yield profile_update.model_dump(mode='json')
+
+                # Launch background Output QA (non-blocking)
+                asyncio.create_task(
+                    self._background_output_qa(
+                        websocket,
+                        username,
+                        user_message,
+                        full_response,
+                        assessment,
+                        response_id
+                    )
+                )
 
             else:
                 # Fallback to direct agent if pipeline not available
@@ -538,6 +560,111 @@ class AdviceService:
                 logger.debug(f"[PROFILE] No extraction result for {username}")
         except Exception as e:
             logger.error(f"[PROFILE] Extraction error (background): {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def _background_output_qa(
+        self,
+        websocket: WebSocket,
+        username: str,
+        user_message: str,
+        response: str,
+        assessment: dict,
+        response_id: str
+    ) -> None:
+        """
+        Run Output QA in background and send correction if issues detected.
+
+        This runs after the response has already been sent to the client.
+        If the QA finds issues, we send a ResponseCorrection message.
+        """
+        try:
+            if not self._is_websocket_connected(websocket):
+                logger.debug(f"[QA] WebSocket not connected for {username}, skipping background QA")
+                return
+
+            if not self.education_pipeline:
+                logger.debug("[QA] Pipeline not available, skipping background QA")
+                return
+
+            logger.info(f"[QA] Starting background Output QA for response {response_id[:8]}...")
+
+            # Build a StrategyDecision-like object from assessment for the QA stage
+            from app.services.education_pipeline import StrategyDecision
+
+            strategy = StrategyDecision(
+                next_action=assessment.get("next_action", "probe_gap"),
+                current_phase=assessment.get("current_phase", "persona"),
+                action_details={"target_field": assessment.get("target_field")},
+                conversation_tone=assessment.get("conversation_tone", "warm"),
+                response_length=assessment.get("response_length", "medium"),
+                things_to_avoid=assessment.get("things_to_avoid", [])
+            )
+
+            # Run Output QA
+            _, qa_result = await self.education_pipeline._stage_6_review_output(
+                username,
+                user_message,
+                response,
+                strategy
+            )
+
+            # Check if correction needed
+            if qa_result.approval == "needs_revision" and qa_result.revision_guidance:
+                logger.warning(f"[QA] Response needs revision: {qa_result.revision_guidance[:100]}")
+
+                # Determine correction type based on issues
+                correction_type = "append"  # Default to append
+                if qa_result.issues:
+                    # Check for major/blocking issues that might need full replacement
+                    has_major_issue = any(
+                        issue.severity in ("major", "blocking")
+                        for issue in qa_result.issues
+                    )
+                    if has_major_issue:
+                        correction_type = "warning"  # Just warn, don't replace
+
+                # Build correction content
+                issues_summary = "; ".join(
+                    issue.issue_description
+                    for issue in qa_result.issues[:2]
+                ) if qa_result.issues else "Response quality improvement suggested"
+
+                correction = ResponseCorrection(
+                    original_response_id=response_id,
+                    correction_type=correction_type,
+                    content=qa_result.revision_guidance,
+                    reason=issues_summary,
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+
+                if self._is_websocket_connected(websocket):
+                    await self.send_message(websocket, correction.model_dump())
+                    logger.info(f"[QA] Sent correction for response {response_id[:8]}")
+                else:
+                    logger.debug(f"[QA] WebSocket disconnected before correction could be sent")
+
+            elif qa_result.approval == "blocked":
+                logger.error(f"[QA] Response BLOCKED: {qa_result.blocking_reason}")
+
+                # Send warning about blocked content
+                correction = ResponseCorrection(
+                    original_response_id=response_id,
+                    correction_type="warning",
+                    content="Please note: My previous response may have contained inaccurate information. Let me clarify...",
+                    reason=qa_result.blocking_reason or "Content quality check failed",
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+
+                if self._is_websocket_connected(websocket):
+                    await self.send_message(websocket, correction.model_dump())
+                    logger.info(f"[QA] Sent blocking warning for response {response_id[:8]}")
+
+            else:
+                logger.info(f"[QA] Response {response_id[:8]} approved")
+
+        except Exception as e:
+            logger.error(f"[QA] Background QA error: {e}")
             import traceback
             traceback.print_exc()
 

@@ -192,6 +192,30 @@ class PipelineDebug(BaseModel):
     timestamp: Optional[str] = None
 
 
+class ResponseCorrection(BaseModel):
+    """
+    Correction message sent after background Output QA detects issues.
+
+    Flow:
+    1. Response is sent immediately to client
+    2. Output QA runs in background
+    3. If issues detected, this correction is sent
+
+    Client should handle:
+    - "append": Add content after original response
+    - "replace": Replace original response entirely
+    - "warning": Show warning but keep original
+    """
+    model_config = ConfigDict(extra='ignore')
+
+    type: Literal["response_correction"] = "response_correction"
+    original_response_id: str  # Links to the response being corrected
+    correction_type: Literal["append", "replace", "warning"] = "append"
+    content: str  # Corrected/additional content
+    reason: str  # Why correction was needed
+    timestamp: Optional[str] = None
+
+
 #
 # Visualization cards (server -> client)
 #
