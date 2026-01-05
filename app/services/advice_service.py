@@ -27,6 +27,7 @@ from app.schemas.advice import (
     UIAction,
     DocumentUploadPrompt,
     ResponseCorrection,
+    VisualizationMessage,
 )
 from app.schemas.financial import FinancialProfile
 from app.core.config import settings
@@ -383,6 +384,8 @@ class AdviceService:
 
         Background: Output QA runs after response is sent, sends corrections if needed.
 
+        EARLY INTENT FILTER: Visualization requests bypass Jamie pipeline entirely.
+
         Yields:
             Agent response chunks, profile updates
         """
@@ -394,6 +397,15 @@ class AdviceService:
                 self._conversation_contexts[username] = ""
 
             self._conversation_contexts[username] += f"\nUser: {user_message}\n"
+
+            # =====================================================================
+            # EARLY INTENT FILTER: Visualization requests bypass Jamie pipeline
+            # =====================================================================
+            if self._is_visualization_request(user_message):
+                logger.info("[PROCESS] Visualization request detected - using dedicated flow")
+                async for msg in self._handle_visualization_request(websocket, username, user_message):
+                    yield msg
+                return
 
             # Use education pipeline if available
             if self.education_pipeline:
@@ -471,6 +483,17 @@ class AdviceService:
                         full_response,
                         assessment,
                         response_id
+                    )
+                )
+
+                # Launch background visualization if relevant (non-blocking)
+                asyncio.create_task(
+                    self._background_visualization(
+                        websocket,
+                        username,
+                        user_message,
+                        full_response,
+                        pipeline_result.get("extracted_data", {}).get("profile", {})
                     )
                 )
 
@@ -577,6 +600,9 @@ class AdviceService:
 
         This runs after the response has already been sent to the client.
         If the QA finds blocking issues, we regenerate and send a corrected response.
+
+        EXCEPTION: Visualization requests bypass QA - users can ask for charts/graphs
+        at any point and we should provide them without discovery-phase restrictions.
         """
         try:
             if not self._is_websocket_connected(websocket):
@@ -585,6 +611,11 @@ class AdviceService:
 
             if not self.education_pipeline:
                 logger.debug("[QA] Pipeline not available, skipping background QA")
+                return
+
+            # BYPASS: Skip QA for visualization requests
+            if self.education_pipeline._is_visualization_request(user_message):
+                logger.info(f"[QA] Visualization request detected - skipping QA for response {response_id[:8]}")
                 return
 
             logger.info(f"[QA] Starting background Output QA for response {response_id[:8]}...")
@@ -702,35 +733,45 @@ Original response that needs fixing:
 {original_response}
 """
 
-            # Get user profile for context
-            profile = await self.education_pipeline._get_user_profile(username)
-
-            # Get user's name
+            # Get user profile and name
+            profile = {}
             user_name = None
             async for session in self.db_manager.get_session():
+                profile_repo = FinancialProfileRepository(session)
+                profile = await profile_repo.get_by_email(username) or {}
                 user_repo = UserRepository(session)
                 user = await user_repo.get_by_email(username)
                 if user:
                     user_name = user.get("name")
 
-            # Build strategy from assessment
-            from app.services.education_pipeline import StrategyDecision
+            # Build ContextAssessment from assessment dict
+            from app.services.education_pipeline import ContextAssessment
 
-            strategy = StrategyDecision(
-                next_action=assessment.get("next_action", "probe_gap"),
+            # Add QA feedback to things_to_avoid
+            things_to_avoid = assessment.get("things_to_avoid", []) + [
+                "multiple questions",
+                "goal-specific framing",
+                qa_result.revision_guidance or "improve response quality"
+            ]
+
+            context_assessment = ContextAssessment(
+                primary_intent=assessment.get("primary_intent", "sharing_info"),
                 current_phase=assessment.get("current_phase", "persona"),
-                action_details={"target_field": assessment.get("target_field")},
+                discovery_completeness=assessment.get("discovery_completeness", "partial"),
+                next_action=assessment.get("next_action", "probe_gap"),
+                target_field=assessment.get("target_field"),
                 conversation_tone=assessment.get("conversation_tone", "warm"),
                 response_length=assessment.get("response_length", "medium"),
-                things_to_avoid=assessment.get("things_to_avoid", []) + ["multiple questions", "goal-specific framing"]
+                things_to_avoid=things_to_avoid,
+                ready_for_goal_planning=False
             )
 
-            # Regenerate with QA feedback included
-            corrected_response = await self.education_pipeline._stage_5_jamie_response(
+            # Regenerate with QA feedback included in message
+            corrected_response = await self.education_pipeline._generate_response_from_assessment(
                 username,
-                user_message + "\n\n" + qa_feedback,  # Include QA feedback in context
+                user_message + "\n\n" + qa_feedback,
+                context_assessment,
                 profile,
-                strategy,
                 user_name
             )
 
@@ -742,6 +783,244 @@ Original response that needs fixing:
             import traceback
             traceback.print_exc()
             return None
+
+    async def _background_visualization(
+        self,
+        websocket: WebSocket,
+        username: str,
+        user_message: str,
+        response: str,
+        profile: dict
+    ) -> None:
+        """
+        Generate and send visualizations if relevant to the conversation.
+
+        Runs in background after response is sent. Only triggers when:
+        - User asks about charts, graphs, visualizations
+        - User asks about spending over time, comparisons, projections
+        - Response involves numeric analysis that benefits from visuals
+        """
+        try:
+            if not self._is_websocket_connected(websocket):
+                logger.debug(f"[VIZ] WebSocket not connected for {username}, skipping visualization")
+                return
+
+            # Check if visualization is relevant for this message
+            if not self._should_generate_visualization(user_message, response):
+                logger.debug(f"[VIZ] Visualization not relevant for this message")
+                return
+
+            logger.info(f"[VIZ] Generating visualization for {username}")
+
+            # Get full profile from repository for complete data
+            full_profile = profile
+            if not full_profile:
+                try:
+                    async for session in self.db_manager.get_session():
+                        profile_repo = FinancialProfileRepository(session)
+                        full_profile = await profile_repo.get_by_email(username) or {}
+                except Exception as e:
+                    logger.error(f"[VIZ] Error fetching profile: {e}")
+                    full_profile = {}
+
+            # Use visualization service to generate relevant visualizations
+            viz_messages = await self.visualization_service.maybe_build_many(
+                username=username,
+                user_text=user_message,
+                agent_text=response,
+                profile_data=full_profile,
+                max_cards=2  # Limit to avoid spam
+            )
+
+            # Send each visualization through WebSocket
+            for viz_msg in viz_messages:
+                if not self._is_websocket_connected(websocket):
+                    logger.debug(f"[VIZ] WebSocket disconnected, stopping visualization send")
+                    return
+
+                logger.info(f"[VIZ] Sending visualization: {viz_msg.title}")
+                await self.send_message(websocket, viz_msg.model_dump(mode='json'))
+
+            if viz_messages:
+                logger.info(f"[VIZ] Sent {len(viz_messages)} visualization(s) for {username}")
+
+        except Exception as e:
+            logger.error(f"[VIZ] Error generating visualization: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _should_generate_visualization(self, user_message: str, response: str) -> bool:
+        """
+        Check if visualization is relevant for this conversation turn.
+
+        Returns True if user explicitly asks for visuals or the conversation
+        involves numeric analysis that would benefit from visualization.
+        """
+        combined_text = f"{user_message} {response}".lower()
+
+        # Explicit visualization triggers
+        explicit_triggers = [
+            "chart", "graph", "visual", "plot", "diagram", "show me",
+            "display", "illustrate", "picture", "draw"
+        ]
+
+        # Numeric/analysis triggers that benefit from visualization
+        analysis_triggers = [
+            "over time", "over the years", "projection", "forecast",
+            "compare", "comparison", "breakdown", "split", "allocation",
+            "spent", "spending", "savings over", "growth",
+            "mortgage", "loan", "amortization", "repayment",
+            "rent vs buy", "rent versus buy",
+            "retirement", "super", "superannuation",
+            "net worth", "assets vs", "income vs expense",
+            "what if", "scenario", "if i"
+        ]
+
+        # Check for explicit triggers
+        for trigger in explicit_triggers:
+            if trigger in combined_text:
+                logger.debug(f"[VIZ] Explicit trigger found: {trigger}")
+                return True
+
+        # Check for analysis triggers
+        for trigger in analysis_triggers:
+            if trigger in combined_text:
+                logger.debug(f"[VIZ] Analysis trigger found: {trigger}")
+                return True
+
+        return False
+
+    def _is_visualization_request(self, user_message: str) -> bool:
+        """
+        Early intent filter to detect if user is asking for a visualization.
+
+        This is more strict than _should_generate_visualization - only triggers
+        when the user is explicitly asking for a visualization, not just when
+        the conversation topic would benefit from one.
+        """
+        message_lower = user_message.lower()
+
+        # Explicit visualization request patterns
+        viz_request_patterns = [
+            "show me", "can you show", "could you show",
+            "visualize", "visualise", "visualization", "visualisation",
+            "chart", "graph", "plot",
+            "display", "illustrate",
+            "over time", "over the years", "over next",
+            "projection", "forecast",
+            "what would", "what if",
+            "compare", "comparison",
+        ]
+
+        # Check if user is explicitly requesting a visualization
+        for pattern in viz_request_patterns:
+            if pattern in message_lower:
+                logger.debug(f"[VIZ_INTENT] Explicit visualization request: {pattern}")
+                return True
+
+        return False
+
+    async def _handle_visualization_request(
+        self,
+        websocket: WebSocket,
+        username: str,
+        user_message: str
+    ) -> AsyncGenerator[dict, None]:
+        """
+        Handle visualization requests with a dedicated flow.
+
+        This bypasses the Jamie pipeline entirely:
+        1. Extract any data mentioned in the request
+        2. Send a brief acknowledgment response
+        3. Generate and send visualizations directly
+
+        Yields:
+            Agent response chunks, visualization messages
+        """
+        logger.info(f"[VIZ_FLOW] Handling visualization request for {username}")
+
+        try:
+            # First, extract any data from the message (in parallel with acknowledgment)
+            if self.education_pipeline:
+                extraction_task = asyncio.create_task(
+                    self.education_pipeline._stage_2_extract_data(username, user_message, {})
+                )
+            else:
+                extraction_task = None
+
+            # Get current profile
+            profile = {}
+            async for session in self.db_manager.get_session():
+                profile_repo = FinancialProfileRepository(session)
+                profile = await profile_repo.get_by_email(username) or {}
+
+            # Send a brief acknowledgment
+            acknowledgment = "Let me create that visualization for you..."
+            agent_response = AgentResponse(
+                content=acknowledgment,
+                is_complete=True,
+                timestamp=datetime.now(timezone.utc).isoformat()
+            )
+            yield agent_response.model_dump()
+
+            # Wait for extraction if running
+            if extraction_task:
+                extracted_data = await extraction_task
+                if extracted_data:
+                    logger.info(f"[VIZ_FLOW] Extracted data: {extracted_data.get('changes', {})}")
+                    # Refresh profile after extraction
+                    async for session in self.db_manager.get_session():
+                        profile_repo = FinancialProfileRepository(session)
+                        profile = await profile_repo.get_by_email(username) or {}
+
+                    # Send profile update if data was extracted
+                    if extracted_data.get("profile"):
+                        profile_data = extracted_data["profile"]
+                        from app.schemas.financial import FinancialProfile
+                        profile_obj = FinancialProfile(**profile_data)
+                        profile_update = ProfileUpdate(
+                            profile=profile_obj,
+                            changes=extracted_data.get("changes"),
+                            timestamp=datetime.now(timezone.utc).isoformat()
+                        )
+                        yield profile_update.model_dump(mode='json')
+
+            # Generate visualizations based on the request
+            viz_messages = await self.visualization_service.maybe_build_many(
+                username=username,
+                user_text=user_message,
+                agent_text=acknowledgment,
+                profile_data=profile,
+                max_cards=3,  # Allow more cards for explicit requests
+                confidence_threshold=0.5  # Lower threshold for explicit requests
+            )
+
+            if viz_messages:
+                for viz_msg in viz_messages:
+                    logger.info(f"[VIZ_FLOW] Sending visualization: {viz_msg.title}")
+                    yield viz_msg.model_dump(mode='json')
+            else:
+                # No visualization could be generated - send a helpful message
+                no_viz_response = AgentResponse(
+                    content="I couldn't generate that visualization with the current data. Could you tell me more about the specifics? For example, the exact amounts, timeframes, or what you'd like to compare.",
+                    is_complete=True,
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+                yield no_viz_response.model_dump()
+
+            # Update conversation context
+            self._conversation_contexts[username] += f"Jamie: {acknowledgment}\n"
+
+        except Exception as e:
+            logger.error(f"[VIZ_FLOW] Error handling visualization request: {e}")
+            import traceback
+            traceback.print_exc()
+            error_response = AgentResponse(
+                content="I had trouble creating that visualization. Could you try rephrasing your request?",
+                is_complete=True,
+                timestamp=datetime.now(timezone.utc).isoformat()
+            )
+            yield error_response.model_dump()
 
     async def _stream_intelligence_updates(
         self,

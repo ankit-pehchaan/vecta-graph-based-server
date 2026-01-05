@@ -47,8 +47,10 @@ class ExtractedLiability(BaseModel):
     liability_type: str = Field(..., description="Type: home_loan, car_loan, personal_loan, credit_card, investment_loan, hecs, other")
     description: str = Field(..., description="Description of the liability")
     amount: Optional[float] = Field(default=None, description="Outstanding balance in AUD if mentioned")
-    monthly_payment: Optional[float] = Field(default=None, description="Monthly payment if mentioned")
+    monthly_payment: Optional[float] = Field(default=None, description="Monthly payment/EMI if mentioned")
     interest_rate: Optional[float] = Field(default=None, description="Interest rate if mentioned")
+    tenure_months: Optional[int] = Field(default=None, description="Remaining loan term in months if mentioned")
+    institution: Optional[str] = Field(default=None, description="Bank/lender name if mentioned")
 
 
 class ExtractedInsurance(BaseModel):

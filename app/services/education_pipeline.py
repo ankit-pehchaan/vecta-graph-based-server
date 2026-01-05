@@ -1365,7 +1365,8 @@ Provide your complete assessment."""
 
             if isinstance(result, ContextAssessment):
                 # HARD ENFORCEMENT: Persona must be complete before financial questions
-                result = self._enforce_persona_first(result, profile)
+                # Pass user_message for visualization bypass detection
+                result = self._enforce_persona_first(result, profile, user_message)
 
                 logger.info(f"Intent: {result.primary_intent}")
                 logger.info(f"Phase: {result.current_phase}")
@@ -1380,13 +1381,28 @@ Provide your complete assessment."""
             logger.error(f"Context assessment error: {e}")
             return ContextAssessment()
 
+    def _is_visualization_request(self, user_message: str) -> bool:
+        """Check if user is asking for a visualization/chart."""
+        viz_triggers = [
+            "show me", "chart", "graph", "visual", "plot", "diagram",
+            "display", "illustrate", "compare", "breakdown",
+            "over time", "over the years", "projection", "forecast",
+            "what would", "what if", "scenario"
+        ]
+        message_lower = user_message.lower()
+        return any(trigger in message_lower for trigger in viz_triggers)
+
     def _enforce_persona_first(
         self,
         assessment: ContextAssessment,
-        profile: Dict[str, Any]
+        profile: Dict[str, Any],
+        user_message: str = ""
     ) -> ContextAssessment:
         """
         HARD ENFORCEMENT: Complete discovery before goal-specific questions.
+
+        EXCEPTION: Visualization requests bypass enforcement - user can ask for
+        charts/graphs at any point and we should provide them.
 
         Order:
         1. Persona: Age → Relationship → Career
@@ -1397,6 +1413,12 @@ Provide your complete assessment."""
 
         This overrides any LLM decision that tries to skip phases.
         """
+        # BYPASS: If user is asking for visualization, skip all enforcement
+        if user_message and self._is_visualization_request(user_message):
+            logger.info("ENFORCEMENT BYPASS: Visualization request detected - skipping discovery enforcement")
+            assessment.next_action = "provide_visualization"
+            assessment.things_to_avoid = ["Don't ask discovery questions", "Just provide what they asked for"]
+            return assessment
         # ===== PERSONA PHASE =====
         age_known = profile.get('age') is not None
         relationship_known = profile.get('relationship_status') is not None
@@ -1507,6 +1529,21 @@ Provide your complete assessment."""
             assessment.ready_for_goal_planning = False
             return assessment
 
+        # RULE 7b: If debts exist, check if we have complete details for each
+        incomplete_debt = self._find_incomplete_debt(liabilities)
+        if incomplete_debt:
+            debt_type = incomplete_debt.get('liability_type', 'debt')
+            missing_field = incomplete_debt.get('_missing_field', 'details')
+            logger.warning(f"ENFORCEMENT: Incomplete debt details for {debt_type} - asking for {missing_field}")
+            assessment.target_field = f"debt_details_{missing_field}"
+            assessment.current_phase = "financial_foundation"
+            assessment.next_action = "probe_gap"
+            assessment.discovery_completeness = "partial"
+            assessment.ready_for_goal_planning = False
+            # Add context about which debt we're asking about
+            assessment.things_to_avoid.append(f"Currently collecting details for: {debt_type}")
+            return assessment
+
         # RULE 8: Ask about other goals before diving into the mentioned goal
         if not multiple_goals_explored and trying_goal_specific:
             logger.warning("ENFORCEMENT: Only one goal known - asking about other goals first")
@@ -1522,6 +1559,42 @@ Provide your complete assessment."""
         assessment.discovery_completeness = "comprehensive"
         assessment.ready_for_goal_planning = True
         return assessment
+
+    def _find_incomplete_debt(self, liabilities: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Find a debt/liability that's missing important details.
+
+        For loans (car, home, personal, bike), we need:
+        - amount (remaining balance)
+        - monthly_payment (EMI)
+        - tenure_months OR interest_rate (need at least one to calculate the other)
+
+        Returns the first incomplete debt with _missing_field set, or None if all complete.
+        """
+        loan_types = ['car_loan', 'home_loan', 'personal_loan', 'bike_loan', 'vehicle_loan', 'mortgage']
+
+        for liability in liabilities:
+            liability_type = (liability.get('liability_type') or '').lower()
+
+            # Only check loan-type debts for completeness
+            is_loan = any(loan in liability_type for loan in loan_types) or 'loan' in liability_type
+
+            if is_loan:
+                amount = liability.get('amount')
+                interest_rate = liability.get('interest_rate')
+                monthly_payment = liability.get('monthly_payment')
+                tenure = liability.get('tenure_months')
+
+                # Check what's missing - in priority order
+                if not amount:
+                    return {**liability, '_missing_field': 'remaining_amount'}
+                if not monthly_payment:
+                    return {**liability, '_missing_field': 'emi'}
+                # Need either tenure or interest rate to calculate the other
+                if not tenure and not interest_rate:
+                    return {**liability, '_missing_field': 'tenure'}
+
+        return None
 
     async def _generate_response_from_assessment(
         self,
@@ -1581,6 +1654,11 @@ If you're about to type the goal word (house, villa, property, etc.), DELETE IT.
             "savings": "Ask about savings. Example: 'Got any savings built up?' or 'What's your savings situation?'",
             "debts": "Ask about debts. Example: 'Any debts to speak of?' or 'Carrying any debts?'",
             "other_goals": "Ask about other financial goals. Example: 'Anything else on your financial wishlist?' or 'Besides that, any other big financial goals?'",
+            # Debt detail fields
+            "debt_details_remaining_amount": "Ask how much is left on the loan. Example: 'How much is still owing on that?' or 'What's the remaining balance?'",
+            "debt_details_emi": "Ask about monthly payments. Example: 'What are you paying each month on that?' or 'What's the EMI?'",
+            "debt_details_interest_rate": "Ask about interest rate. If they don't know, that's OK - we can work it out from EMI. Example: 'Do you know the interest rate?' or 'Any idea what rate you're paying?'",
+            "debt_details_tenure": "Ask how long is left on the loan. Example: 'How many years left on that?' or 'How long till it's paid off?' If they know EMI and balance, we can calculate the rate.",
         }
 
         field_hint = field_guidance.get(assessment.target_field, "")
