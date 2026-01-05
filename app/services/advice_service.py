@@ -573,10 +573,10 @@ class AdviceService:
         response_id: str
     ) -> None:
         """
-        Run Output QA in background and send correction if issues detected.
+        Run Output QA in background and regenerate response if issues detected.
 
         This runs after the response has already been sent to the client.
-        If the QA finds issues, we send a ResponseCorrection message.
+        If the QA finds blocking issues, we regenerate and send a corrected response.
         """
         try:
             if not self._is_websocket_connected(websocket):
@@ -610,56 +610,56 @@ class AdviceService:
             )
 
             # Check if correction needed
-            if qa_result.approval == "needs_revision" and qa_result.revision_guidance:
-                logger.warning(f"[QA] Response needs revision: {qa_result.revision_guidance[:100]}")
+            needs_regeneration = False
+            if qa_result.approval == "blocked":
+                needs_regeneration = True
+                logger.warning(f"[QA] Response BLOCKED: {qa_result.blocking_reason}")
+            elif qa_result.approval == "needs_revision" and qa_result.issues:
+                # Check for major issues that warrant regeneration
+                has_major_issue = any(
+                    issue.severity in ("major", "blocking")
+                    for issue in qa_result.issues
+                )
+                if has_major_issue:
+                    needs_regeneration = True
+                    logger.warning(f"[QA] Response needs major revision: {qa_result.revision_guidance[:100] if qa_result.revision_guidance else 'No guidance'}")
 
-                # Determine correction type based on issues
-                correction_type = "append"  # Default to append
-                if qa_result.issues:
-                    # Check for major/blocking issues that might need full replacement
-                    has_major_issue = any(
-                        issue.severity in ("major", "blocking")
-                        for issue in qa_result.issues
+            if needs_regeneration:
+                # Regenerate the response with QA feedback
+                corrected_response = await self._regenerate_response_with_qa_feedback(
+                    username,
+                    user_message,
+                    response,
+                    qa_result,
+                    assessment
+                )
+
+                if corrected_response and self._is_websocket_connected(websocket):
+                    # Build correction content
+                    issues_summary = "; ".join(
+                        issue.issue_description
+                        for issue in qa_result.issues[:2]
+                    ) if qa_result.issues else (qa_result.blocking_reason or "Quality improvement")
+
+                    correction = ResponseCorrection(
+                        original_response_id=response_id,
+                        correction_type="replace",
+                        content=corrected_response,
+                        reason=issues_summary,
+                        timestamp=datetime.now(timezone.utc).isoformat()
                     )
-                    if has_major_issue:
-                        correction_type = "warning"  # Just warn, don't replace
 
-                # Build correction content
-                issues_summary = "; ".join(
-                    issue.issue_description
-                    for issue in qa_result.issues[:2]
-                ) if qa_result.issues else "Response quality improvement suggested"
-
-                correction = ResponseCorrection(
-                    original_response_id=response_id,
-                    correction_type=correction_type,
-                    content=qa_result.revision_guidance,
-                    reason=issues_summary,
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                )
-
-                if self._is_websocket_connected(websocket):
                     await self.send_message(websocket, correction.model_dump())
-                    logger.info(f"[QA] Sent correction for response {response_id[:8]}")
-                else:
-                    logger.debug(f"[QA] WebSocket disconnected before correction could be sent")
+                    logger.info(f"[QA] Sent regenerated response for {response_id[:8]}")
 
-            elif qa_result.approval == "blocked":
-                logger.error(f"[QA] Response BLOCKED: {qa_result.blocking_reason}")
-
-                # Send warning about blocked content
-                correction = ResponseCorrection(
-                    original_response_id=response_id,
-                    correction_type="warning",
-                    content="Please note: My previous response may have contained inaccurate information. Let me clarify...",
-                    reason=qa_result.blocking_reason or "Content quality check failed",
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                )
-
-                if self._is_websocket_connected(websocket):
-                    await self.send_message(websocket, correction.model_dump())
-                    logger.info(f"[QA] Sent blocking warning for response {response_id[:8]}")
-
+                    # Update conversation context with corrected response
+                    self._conversation_contexts[username] = self._conversation_contexts.get(username, "").replace(
+                        f"Jamie: {response}\n",
+                        f"Jamie: {corrected_response}\n"
+                    )
+            elif qa_result.approval == "needs_revision" and qa_result.revision_guidance:
+                # Minor issues - just log, don't send correction for minor stuff
+                logger.info(f"[QA] Minor revision suggested (not sending): {qa_result.revision_guidance[:100]}")
             else:
                 logger.info(f"[QA] Response {response_id[:8]} approved")
 
@@ -667,6 +667,81 @@ class AdviceService:
             logger.error(f"[QA] Background QA error: {e}")
             import traceback
             traceback.print_exc()
+
+    async def _regenerate_response_with_qa_feedback(
+        self,
+        username: str,
+        user_message: str,
+        original_response: str,
+        qa_result,
+        assessment: dict
+    ) -> str | None:
+        """
+        Regenerate a response incorporating QA feedback.
+
+        Returns the corrected response or None if regeneration fails.
+        """
+        try:
+            if not self.education_pipeline:
+                return None
+
+            # Build feedback context for regeneration
+            issues_text = "\n".join(
+                f"- {issue.issue_description}"
+                for issue in qa_result.issues
+            ) if qa_result.issues else ""
+
+            qa_feedback = f"""
+QA FEEDBACK (incorporate this):
+{qa_result.revision_guidance or qa_result.blocking_reason or "Improve response quality"}
+
+Issues to fix:
+{issues_text}
+
+Original response that needs fixing:
+{original_response}
+"""
+
+            # Get user profile for context
+            profile = await self.education_pipeline._get_user_profile(username)
+
+            # Get user's name
+            user_name = None
+            async for session in self.db_manager.get_session():
+                user_repo = UserRepository(session)
+                user = await user_repo.get_by_email(username)
+                if user:
+                    user_name = user.get("name")
+
+            # Build strategy from assessment
+            from app.services.education_pipeline import StrategyDecision
+
+            strategy = StrategyDecision(
+                next_action=assessment.get("next_action", "probe_gap"),
+                current_phase=assessment.get("current_phase", "persona"),
+                action_details={"target_field": assessment.get("target_field")},
+                conversation_tone=assessment.get("conversation_tone", "warm"),
+                response_length=assessment.get("response_length", "medium"),
+                things_to_avoid=assessment.get("things_to_avoid", []) + ["multiple questions", "goal-specific framing"]
+            )
+
+            # Regenerate with QA feedback included
+            corrected_response = await self.education_pipeline._stage_5_jamie_response(
+                username,
+                user_message + "\n\n" + qa_feedback,  # Include QA feedback in context
+                profile,
+                strategy,
+                user_name
+            )
+
+            logger.info(f"[QA] Regenerated response: {corrected_response[:100]}...")
+            return corrected_response
+
+        except Exception as e:
+            logger.error(f"[QA] Response regeneration failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     async def _stream_intelligence_updates(
         self,

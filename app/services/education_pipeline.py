@@ -211,11 +211,12 @@ class OutputQAChecks(BaseModel):
     no_multiple_questions: bool = Field(default=True, description="Only ONE question asked?")
     no_robotic_patterns: bool = Field(default=True, description="No 'Great!', 'help me understand', etc.?")
     no_deflection: bool = Field(default=True, description="Didn't suggest talking to another adviser?")
+    no_goal_framing: bool = Field(default=True, description="Doesn't tie questions back to goals (e.g., 'that'll help with the house')")
 
 
 class OutputQAIssue(BaseModel):
     """A specific issue found in the response."""
-    issue_type: str = Field(..., description="Type: robotic_pattern, directive_miss, compliance, tone, length, multiple_questions, deflection")
+    issue_type: str = Field(..., description="Type: robotic_pattern, directive_miss, compliance, tone, length, multiple_questions, deflection, goal_framing")
     issue_description: str = Field(..., description="What's wrong")
     severity: str = Field(default="minor", description="Severity: minor, major, blocking")
 
@@ -312,6 +313,14 @@ class ContextAssessment(BaseModel):
         default_factory=list,
         description="Things NOT to do in this response"
     )
+
+    def model_post_init(self, __context) -> None:
+        """Automatically add 'no goal references' during discovery phases."""
+        discovery_phases = ("persona", "life_aspirations", "financial_foundation")
+        if self.current_phase in discovery_phases:
+            no_goal_ref = "Don't reference the goal in questions or comments"
+            if no_goal_ref not in self.things_to_avoid:
+                self.things_to_avoid.append(no_goal_ref)
 
 
 # =============================================================================
@@ -1386,6 +1395,19 @@ ASSESSMENT RESULTS:
 - Ready for Goal Planning: {assessment.ready_for_goal_planning}
 """
 
+        # Check if we're still in discovery phases (1-3)
+        in_discovery = assessment.current_phase in ("persona", "life_aspirations", "financial_foundation")
+
+        no_goal_ref_rule = """
+CRITICAL - NO GOAL REFERENCES:
+During discovery, do NOT reference their goal in questions or comments.
+BAD: "Is your income stable enough to support the villa?"
+GOOD: "Is your income stable?"
+BAD: "Any savings? That'll help with the property."
+GOOD: "Any savings built up?"
+If you're about to type the goal word (house, villa, property, etc.), DELETE IT.
+""" if in_discovery else ""
+
         prompt = f"""You are Jamie responding to this user message.
 
 USER MESSAGE: {user_message}
@@ -1403,7 +1425,7 @@ IMPORTANT:
 - ONE question maximum
 - Don't ask multiple questions
 - If user mentioned a goal, acknowledge it warmly but redirect to persona questions
-
+{no_goal_ref_rule}
 Generate your response as Jamie:"""
 
         try:
