@@ -115,7 +115,7 @@ class ProfileExtractor:
 
         agent = Agent(
             name="Financial Profile Extractor",
-            model=OpenAIChat(id="gpt-4o"),
+            model=OpenAIChat(id="gpt-4o-mini"),  # Use fast model for extraction
             instructions=PROFILE_EXTRACTOR_SYSTEM_PROMPT,
             db=SqliteDb(db_file=db_file),
             user_id=f"{username}_extractor",
