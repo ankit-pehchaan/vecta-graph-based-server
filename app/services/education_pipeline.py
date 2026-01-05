@@ -1432,6 +1432,33 @@ Generate your response as Jamie:"""
 
         parts = []
 
+        # Persona fields (Phase 1) - CRITICAL for context
+        if profile.get("age") is not None:
+            parts.append(f"Age: {profile['age']}")
+
+        if profile.get("relationship_status"):
+            parts.append(f"Relationship: {profile['relationship_status']}")
+
+        if profile.get("has_kids") is not None:
+            kids_str = "Has kids" if profile["has_kids"] else "No kids"
+            if profile.get("number_of_kids"):
+                kids_str += f" ({profile['number_of_kids']})"
+            parts.append(kids_str)
+
+        if profile.get("career"):
+            parts.append(f"Career: {profile['career']}")
+
+        if profile.get("location"):
+            parts.append(f"Location: {profile['location']}")
+
+        # Life aspirations (Phase 2)
+        if profile.get("family_plans"):
+            parts.append(f"Family plans: {profile['family_plans']}")
+
+        if profile.get("retirement_age"):
+            parts.append(f"Target retirement: {profile['retirement_age']}")
+
+        # Financial data (Phase 3)
         if profile.get("income"):
             parts.append(f"Income: ${profile['income']:,.0f}/year")
 

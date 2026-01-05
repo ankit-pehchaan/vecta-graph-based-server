@@ -160,16 +160,44 @@ class FinancialProfileRepository(IFinancialProfileRepository):
     async def add_items(self, email: str, new_items: dict) -> dict:
         """
         Add new goals/assets/liabilities/insurance/superannuation to existing user.
-        
+
         This method ADDS items incrementally without deleting existing ones.
-        Scalar fields (income, expenses, etc.) are updated if provided.
+        Scalar fields (persona, life aspirations, financial) are updated if provided.
         """
         user = await self._get_user_with_financial_data(email)
-        
+
         if not user:
             raise ValueError(f"User with email {email} not found")
-        
-        # Update scalar fields if provided
+
+        # Update persona fields (Phase 1)
+        if new_items.get("age") is not None:
+            user.age = new_items["age"]
+        if new_items.get("relationship_status") is not None:
+            user.relationship_status = new_items["relationship_status"]
+        if new_items.get("has_kids") is not None:
+            user.has_kids = new_items["has_kids"]
+        if new_items.get("number_of_kids") is not None:
+            user.number_of_kids = new_items["number_of_kids"]
+        if new_items.get("career") is not None:
+            user.career = new_items["career"]
+        if new_items.get("location") is not None:
+            user.location = new_items["location"]
+
+        # Update life aspiration fields (Phase 2)
+        if new_items.get("marriage_plans") is not None:
+            user.marriage_plans = new_items["marriage_plans"]
+        if new_items.get("family_plans") is not None:
+            user.family_plans = new_items["family_plans"]
+        if new_items.get("career_goals") is not None:
+            user.career_goals = new_items["career_goals"]
+        if new_items.get("retirement_age") is not None:
+            user.retirement_age = new_items["retirement_age"]
+        if new_items.get("retirement_vision") is not None:
+            user.retirement_vision = new_items["retirement_vision"]
+        if new_items.get("lifestyle_goals") is not None:
+            user.lifestyle_goals = new_items["lifestyle_goals"]
+
+        # Update financial fields (Phase 3)
         if new_items.get("income") is not None:
             user.income = new_items["income"]
         if new_items.get("monthly_income") is not None:
@@ -180,15 +208,15 @@ class FinancialProfileRepository(IFinancialProfileRepository):
             user.risk_tolerance = new_items["risk_tolerance"]
         if new_items.get("financial_stage") is not None:
             user.financial_stage = new_items["financial_stage"]
-        
+
         user.updated_at = datetime.now(timezone.utc)
-        
+
         # ADD new items (don't delete existing ones)
         await self._add_related_items(user.id, new_items)
-        
+
         await self._session.flush()
         await self._session.refresh(user)
-        
+
         return user.to_financial_dict()
 
     async def update(self, email: str, profile_data: dict) -> dict:
