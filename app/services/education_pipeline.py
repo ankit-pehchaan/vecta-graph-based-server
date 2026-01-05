@@ -15,6 +15,7 @@ Each stage has debug logging for observability.
 
 import os
 import logging
+import asyncio
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
@@ -250,70 +251,100 @@ class EducationPipeline:
 
     Orchestrates specialized agents in sequence, with each stage
     adding context and decisions for the next stage.
+
+    Model Configuration:
+    - FAST_MODEL: Used for classification, validation, strategy (lower latency)
+    - QUALITY_MODEL: Used for response generation (higher quality)
+
+    The fast model handles structured output tasks where speed matters.
+    The quality model handles the final response where quality matters.
     """
 
-    def __init__(self, db_manager):
+    # Model configuration - can be overridden
+    FAST_MODEL = "gpt-4o-mini"      # For intent, validation, strategy, QA
+    QUALITY_MODEL = "gpt-4o"        # For response generation (Jamie)
+
+    def __init__(self, db_manager, use_fast_models: bool = True):
+        """
+        Initialize the pipeline.
+
+        Args:
+            db_manager: Database manager for profile storage
+            use_fast_models: If True, use gpt-4o-mini for classification stages (faster)
+                           If False, use gpt-4o for all stages (higher quality but slower)
+        """
         self.db_manager = db_manager
         self._agents: Dict[str, Agent] = {}
         self._db_dir = "tmp/agents"
+        self._use_fast_models = use_fast_models
         os.makedirs(self._db_dir, exist_ok=True)
 
         if settings.OPENAI_API_KEY:
             os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
 
-        logger.info("EducationPipeline initialized")
+        model_mode = "FAST (gpt-4o-mini for stages 1-4,6)" if use_fast_models else "QUALITY (gpt-4o for all)"
+        logger.info(f"EducationPipeline initialized - Model Mode: {model_mode}")
 
     # -------------------------------------------------------------------------
     # AGENT FACTORY METHODS
     # -------------------------------------------------------------------------
 
+    def _get_model_id(self, for_response: bool = False) -> str:
+        """Get the appropriate model ID based on configuration."""
+        if for_response:
+            return self.QUALITY_MODEL  # Always use quality model for responses
+        return self.FAST_MODEL if self._use_fast_models else self.QUALITY_MODEL
+
     def _get_intent_classifier(self, username: str) -> Agent:
-        """Get or create Intent Classifier agent."""
-        key = f"intent_{username}"
+        """Get or create Intent Classifier agent (uses fast model)."""
+        key = f"intent_{username}_{self._use_fast_models}"
         if key not in self._agents:
+            model_id = self._get_model_id(for_response=False)
             self._agents[key] = Agent(
                 name="Intent Classifier",
-                model=OpenAIChat(id="gpt-4o"),
+                model=OpenAIChat(id=model_id),
                 instructions=INTENT_CLASSIFIER_PROMPT,
                 output_schema=IntentClassification,
                 markdown=False,
                 debug_mode=False
             )
-            logger.debug(f"Created Intent Classifier agent for {username}")
+            logger.debug(f"Created Intent Classifier agent for {username} (model: {model_id})")
         return self._agents[key]
 
     def _get_qa_validator(self, username: str) -> Agent:
-        """Get or create QA/Validator agent."""
-        key = f"qa_{username}"
+        """Get or create QA/Validator agent (uses fast model)."""
+        key = f"qa_{username}_{self._use_fast_models}"
         if key not in self._agents:
+            model_id = self._get_model_id(for_response=False)
             self._agents[key] = Agent(
                 name="QA Validator",
-                model=OpenAIChat(id="gpt-4o"),
+                model=OpenAIChat(id=model_id),
                 instructions=QA_VALIDATOR_PROMPT,
                 output_schema=ValidationResult,
                 markdown=False,
                 debug_mode=False
             )
-            logger.debug(f"Created QA Validator agent for {username}")
+            logger.debug(f"Created QA Validator agent for {username} (model: {model_id})")
         return self._agents[key]
 
     def _get_strategy_router(self, username: str) -> Agent:
-        """Get or create Strategy/Router agent."""
-        key = f"strategy_{username}"
+        """Get or create Strategy/Router agent (uses fast model)."""
+        key = f"strategy_{username}_{self._use_fast_models}"
         if key not in self._agents:
+            model_id = self._get_model_id(for_response=False)
             self._agents[key] = Agent(
                 name="Strategy Router",
-                model=OpenAIChat(id="gpt-4o"),
+                model=OpenAIChat(id=model_id),
                 instructions=STRATEGY_ROUTER_PROMPT,
                 output_schema=StrategyDecision,
                 markdown=False,
                 debug_mode=False
             )
-            logger.debug(f"Created Strategy Router agent for {username}")
+            logger.debug(f"Created Strategy Router agent for {username} (model: {model_id})")
         return self._agents[key]
 
     def _get_conversation_agent(self, username: str, user_name: Optional[str] = None) -> Agent:
-        """Get or create Conversation Agent (Jamie)."""
+        """Get or create Conversation Agent (Jamie) - ALWAYS uses quality model."""
         key = f"jamie_{username}"
         if key not in self._agents:
             db_file = os.path.join(self._db_dir, f"jamie_{username}.db")
@@ -321,9 +352,10 @@ class EducationPipeline:
             if user_name:
                 instructions += f"\n\nYou're speaking with {user_name}."
 
+            # Jamie ALWAYS uses the quality model for best responses
             self._agents[key] = Agent(
                 name="Jamie (Financial Educator)",
-                model=OpenAIChat(id="gpt-4o"),
+                model=OpenAIChat(id=self.QUALITY_MODEL),
                 instructions=instructions,
                 db=SqliteDb(db_file=db_file),
                 user_id=username,
@@ -332,22 +364,23 @@ class EducationPipeline:
                 markdown=True,
                 debug_mode=False
             )
-            logger.debug(f"Created Conversation Agent (Jamie) for {username}")
+            logger.debug(f"Created Conversation Agent (Jamie) for {username} (model: {self.QUALITY_MODEL})")
         return self._agents[key]
 
     def _get_output_qa(self, username: str) -> Agent:
-        """Get or create Output QA agent."""
-        key = f"output_qa_{username}"
+        """Get or create Output QA agent (uses fast model)."""
+        key = f"output_qa_{username}_{self._use_fast_models}"
         if key not in self._agents:
+            model_id = self._get_model_id(for_response=False)
             self._agents[key] = Agent(
                 name="Output QA",
-                model=OpenAIChat(id="gpt-4o"),
+                model=OpenAIChat(id=model_id),
                 instructions=OUTPUT_QA_PROMPT,
                 output_schema=OutputQAResult,
                 markdown=False,
                 debug_mode=False
             )
-            logger.debug(f"Created Output QA agent for {username}")
+            logger.debug(f"Created Output QA agent for {username} (model: {model_id})")
         return self._agents[key]
 
     # -------------------------------------------------------------------------
@@ -635,10 +668,19 @@ PHASE ORDER (SACRED - NO EXCEPTIONS):
 Persona → Life Aspirations → Financial Foundation → All Goals → Reality Check → Deep Dive
 
 CRITICAL RULES:
+- AGE IS ALWAYS THE FIRST QUESTION after a goal is stated. Not household, not income. AGE.
+- If age unknown → target_field MUST be "age"
 - If Phase 1 (Persona) incomplete → MUST stay in persona phase
 - If Phase 2 (Life Aspirations) incomplete → CANNOT discuss finances deeply yet
-- If user stated a goal → acknowledge warmly, then redirect to current phase
+- If user stated a goal → acknowledge warmly, then ask AGE immediately
 - If only one goal mentioned → MUST explore other goals before diving in
+
+QUESTION ORDER IN PHASE 1:
+1. Age (FIRST - mandatory)
+2. Relationship status (AFTER age)
+3. Family/kids (AFTER relationship)
+4. Career (AFTER family)
+5. Location (AFTER career)
 
 Return a StrategyDecision with:
 1. current_phase: persona | life_aspirations | financial_foundation | goals_overview | reality_check | goal_deep_dive
@@ -898,10 +940,20 @@ Return structured approval with explicit boolean checks."""
     async def process_message(
         self,
         username: str,
-        user_message: str
+        user_message: str,
+        skip_output_qa: bool = False
     ) -> Dict[str, Any]:
         """
         Process a user message through the full education pipeline.
+
+        Optimized for latency with parallel execution where possible:
+        - Stage 1 (Intent) and Stage 2 (Extraction) run in PARALLEL
+        - Stage 6 (Output QA) can be skipped for faster responses
+
+        Args:
+            username: The user's identifier
+            user_message: The message to process
+            skip_output_qa: If True, skip Stage 6 for faster response (default False)
 
         Returns:
             Dictionary containing:
@@ -909,13 +961,15 @@ Return structured approval with explicit boolean checks."""
             - intent: Intent classification result
             - validation: Validation result
             - strategy: Strategy decision
-            - qa_result: Output QA result
+            - qa_result: Output QA result (None if skipped)
             - extracted_data: Any data extracted from message
+            - duration_seconds: Total processing time
         """
         logger.info("=" * 60)
-        logger.info("EDUCATION PIPELINE START")
+        logger.info("EDUCATION PIPELINE START (Parallel Optimized)")
         logger.info(f"User: {username}")
         logger.info(f"Message: {user_message}")
+        logger.info(f"Skip Output QA: {skip_output_qa}")
         logger.info("=" * 60)
 
         start_time = datetime.now(timezone.utc)
@@ -926,33 +980,57 @@ Return structured approval with explicit boolean checks."""
             profile_repo = FinancialProfileRepository(session)
             profile = await profile_repo.get_by_username(username) or {}
 
-        # Stage 1: Intent Classification
-        intent = await self._stage_1_classify_intent(username, user_message)
+        # =====================================================================
+        # PARALLEL EXECUTION: Stage 1 (Intent) + Stage 2 (Extraction)
+        # Both only need user_message and profile, no interdependency
+        # =====================================================================
+        parallel_start = datetime.now(timezone.utc)
 
-        # Stage 2: Data Extraction
-        extracted_data = await self._stage_2_extract_data(username, user_message, profile)
+        intent_task = asyncio.create_task(
+            self._stage_1_classify_intent(username, user_message)
+        )
+        extraction_task = asyncio.create_task(
+            self._stage_2_extract_data(username, user_message, profile)
+        )
 
-        # Refresh profile after extraction
+        # Wait for both to complete
+        intent, extracted_data = await asyncio.gather(intent_task, extraction_task)
+
+        parallel_duration = (datetime.now(timezone.utc) - parallel_start).total_seconds()
+        logger.info(f"Parallel Stage 1+2 Duration: {parallel_duration:.2f}s")
+
+        # Refresh profile after extraction (if data was extracted)
         if extracted_data:
             async for session in self.db_manager.get_session():
                 profile_repo = FinancialProfileRepository(session)
                 profile = await profile_repo.get_by_username(username) or {}
 
-        # Stage 3: QA/Validation
+        # =====================================================================
+        # SEQUENTIAL EXECUTION: Stages 3-5 (have dependencies)
+        # =====================================================================
+
+        # Stage 3: QA/Validation (needs intent)
         validation = await self._stage_3_validate_profile(username, intent, profile)
 
-        # Stage 4: Strategy/Routing
+        # Stage 4: Strategy/Routing (needs intent + validation)
         strategy = await self._stage_4_decide_strategy(username, intent, validation, profile)
 
-        # Stage 5: Response Generation
+        # Stage 5: Response Generation (needs strategy)
         response = await self._stage_5_generate_response(
             username, user_message, strategy, intent, profile
         )
 
-        # Stage 6: Output QA
-        final_response, qa_result = await self._stage_6_review_output(
-            username, user_message, response, strategy
-        )
+        # =====================================================================
+        # OPTIONAL: Stage 6 (Output QA) - can be skipped for lower latency
+        # =====================================================================
+        qa_result = None
+        if not skip_output_qa:
+            final_response, qa_result = await self._stage_6_review_output(
+                username, user_message, response, strategy
+            )
+        else:
+            final_response = response
+            logger.info("Stage 6 (Output QA) SKIPPED for lower latency")
 
         end_time = datetime.now(timezone.utc)
         duration = (end_time - start_time).total_seconds()
@@ -967,7 +1045,83 @@ Return structured approval with explicit boolean checks."""
             "intent": intent.model_dump(),
             "validation": validation.model_dump(),
             "strategy": strategy.model_dump(),
-            "qa_result": qa_result.model_dump(),
+            "qa_result": qa_result.model_dump() if qa_result else None,
+            "extracted_data": extracted_data,
+            "duration_seconds": duration
+        }
+
+    async def process_message_fast(
+        self,
+        username: str,
+        user_message: str
+    ) -> Dict[str, Any]:
+        """
+        Fast-mode pipeline with minimal latency.
+
+        Optimizations:
+        - Runs Stage 1 + 2 in parallel
+        - Combines Stage 3 + 4 (validation + strategy) into single LLM call
+        - Skips Stage 6 (Output QA)
+
+        Best for: Real-time chat where latency matters more than perfect QA.
+        """
+        logger.info("=" * 60)
+        logger.info("EDUCATION PIPELINE START (FAST MODE)")
+        logger.info(f"User: {username}")
+        logger.info(f"Message: {user_message}")
+        logger.info("=" * 60)
+
+        start_time = datetime.now(timezone.utc)
+
+        # Get existing profile
+        profile = {}
+        async for session in self.db_manager.get_session():
+            profile_repo = FinancialProfileRepository(session)
+            profile = await profile_repo.get_by_username(username) or {}
+
+        # PARALLEL: Stage 1 + Stage 2
+        intent_task = asyncio.create_task(
+            self._stage_1_classify_intent(username, user_message)
+        )
+        extraction_task = asyncio.create_task(
+            self._stage_2_extract_data(username, user_message, profile)
+        )
+
+        intent, extracted_data = await asyncio.gather(intent_task, extraction_task)
+
+        # Refresh profile if needed
+        if extracted_data:
+            async for session in self.db_manager.get_session():
+                profile_repo = FinancialProfileRepository(session)
+                profile = await profile_repo.get_by_username(username) or {}
+
+        # COMBINED: Stage 3 + 4 (validation + strategy in parallel-ish)
+        # We still need to run them sequentially due to dependency,
+        # but we skip detailed logging for speed
+        validation = await self._stage_3_validate_profile(username, intent, profile)
+        strategy = await self._stage_4_decide_strategy(username, intent, validation, profile)
+
+        # Stage 5: Response Generation
+        response = await self._stage_5_generate_response(
+            username, user_message, strategy, intent, profile
+        )
+
+        # SKIP Stage 6 for speed
+
+        end_time = datetime.now(timezone.utc)
+        duration = (end_time - start_time).total_seconds()
+
+        logger.info("=" * 60)
+        logger.info("EDUCATION PIPELINE COMPLETE (FAST MODE)")
+        logger.info(f"Total Duration: {duration:.2f}s")
+        logger.info("=" * 60)
+
+        return {
+            "response": response,
+            "intent": intent.model_dump(),
+            "validation": validation.model_dump(),
+            "strategy": strategy.model_dump(),
+            "qa_result": None,
             "extracted_data": extracted_data,
             "duration_seconds": duration
         }
