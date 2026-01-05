@@ -24,7 +24,6 @@ from app.schemas.advice import (
     UIActionsMessage,
     UIAction,
     DocumentUploadPrompt,
-    PipelineDebug
 )
 from app.schemas.financial import FinancialProfile
 from app.core.config import settings
@@ -429,16 +428,11 @@ class AdviceService:
                 )
                 yield final_response.model_dump()
 
-                # Send pipeline debug info
-                debug_info = PipelineDebug(
-                    intent=pipeline_result["intent"],
-                    validation=pipeline_result["validation"],
-                    strategy=pipeline_result["strategy"],
-                    qa_result=pipeline_result["qa_result"],
-                    duration_seconds=pipeline_result["duration_seconds"],
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                )
-                yield debug_info.model_dump()
+                # Pipeline debug info - server logs only, not sent to client
+                logger.debug(f"[PIPELINE] Intent: {pipeline_result['intent'].get('primary_intent')}")
+                logger.debug(f"[PIPELINE] Phase: {pipeline_result['validation'].get('current_phase')}")
+                logger.debug(f"[PIPELINE] Strategy: {pipeline_result['strategy'].get('next_action')}")
+                logger.debug(f"[PIPELINE] Duration: {pipeline_result['duration_seconds']:.2f}s")
 
                 # Update conversation context with agent response
                 self._conversation_contexts[username] += f"Jamie: {full_response}\n"
