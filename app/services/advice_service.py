@@ -417,7 +417,7 @@ class AdviceService:
                 full_response = pipeline_result["response"]
                 response_id = str(uuid.uuid4())  # Unique ID for this response
 
-                # Stream the response
+                # Stream the response with minimal delay for proper WebSocket ordering
                 chunk_size = 5
                 for i in range(0, len(full_response), chunk_size):
                     chunk = full_response[i:i + chunk_size]
@@ -428,6 +428,7 @@ class AdviceService:
                             timestamp=datetime.now(timezone.utc).isoformat()
                         )
                         yield agent_response.model_dump()
+                        await asyncio.sleep(0)  # Yield to event loop for proper message ordering
 
                 # Mark final chunk as complete
                 final_response = AgentResponse(
