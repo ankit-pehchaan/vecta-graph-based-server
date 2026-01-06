@@ -10,7 +10,7 @@ import logging
 from typing import Optional, Callable, Any
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from agno.db.sqlite import SqliteDb
+from agno.db.postgres import PostgresDb
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories.user_repository import UserRepository
 from app.repositories.financial_profile_repository import FinancialProfileRepository
@@ -23,19 +23,9 @@ from app.core.prompts import (
     GREETING_RETURNING_NO_SUMMARY,
 )
 
-# Configure logger
+# Configure logger (set to WARNING to disable verbose debug logs)
 logger = logging.getLogger("agno_agent_service")
-logger.setLevel(logging.DEBUG)
-
-if not logger.handlers:
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(
-        '[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+logger.setLevel(logging.WARNING)
 
 
 class AgnoAgentService:
@@ -50,16 +40,12 @@ class AgnoAgentService:
         self.db_manager = db_manager
         self._agents: dict[str, Agent] = {}  # Cache agents per user
         self._legacy_agents: dict[str, Agent] = {}  # Legacy agents without tools
-        self._db_dir = "tmp/agents"
-
-        # Create directory for agent databases if it doesn't exist
-        os.makedirs(self._db_dir, exist_ok=True)
 
         # Set OpenAI API key from config if available
         if settings.OPENAI_API_KEY:
             os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
 
-        logger.info("AgnoAgentService initialized with tool-based architecture")
+        logger.info("AgnoAgentService initialized with tool-based architecture (PostgreSQL storage)")
 
     def _create_session_tools(self, session_id: str) -> list[Callable]:
         """
@@ -221,9 +207,14 @@ class AgnoAgentService:
             session: Database session (used for user lookup only, tools create own sessions)
 
         Returns:
-            Agent instance with tools
+            Agent instance with tools (cached per user)
         """
         logger.debug(f"[GET_AGENT_V2] Requested tool-based agent for user: {username}")
+
+        # Return cached agent if exists
+        if username in self._agents:
+            logger.debug(f"[GET_AGENT_V2] Returning CACHED agent for: {username}")
+            return self._agents[username]
 
         # Get user info
         user_repo = UserRepository(session)
@@ -233,32 +224,35 @@ class AgnoAgentService:
 
         # Create tools (they create their own sessions internally)
         tools = self._create_session_tools(username)
-        logger.debug(f"[GET_AGENT_V2] Created {len(tools)} tools")
-
-        # Create agent with per-user database and tools
-        db_file = os.path.join(self._db_dir, f"agent_{username}.db")
+        logger.debug(f"[GET_AGENT_V2] Created {len(tools)} tools: {[t.__name__ for t in tools]}")
 
         # Build instructions with user name if available
         instructions = AGENT_PROMPT_V2
         if user_name:
             instructions = f"{AGENT_PROMPT_V2}\n\nYou're speaking with {user_name}."
 
+        # Create agent with PostgreSQL storage for scalability
         agent = Agent(
             id=f"finance-educator-{username}",
             name="Vecta - Financial Educator",
-            model=OpenAIChat(id="gpt-4.1"),
+            model=OpenAIChat(id="gpt-4o"),  # Use gpt-4o (gpt-4.1 doesn't exist)
             instructions=instructions,
             tools=tools,
-            db=SqliteDb(db_file=db_file),
+            db=PostgresDb(
+                db_url=settings.SYNC_DATABASE_URL,
+                session_table="agno_sessions"
+            ),
             user_id=username,
             add_history_to_context=True,
             num_history_runs=5,
             enable_session_summaries=True,
             markdown=True,
-            debug_mode=False
+            debug_mode=True  # Enable to see tool calls
         )
 
-        logger.info(f"[GET_AGENT_V2] Created tool-based agent for: {username}")
+        # Cache the agent
+        self._agents[username] = agent
+        logger.info(f"[GET_AGENT_V2] Created and CACHED tool-based agent for: {username}")
         return agent
 
     async def get_agent(self, username: str) -> Agent:
@@ -290,18 +284,19 @@ class AgnoAgentService:
         user_name = user.get("name") if user else None
         logger.debug(f"[GET_AGENT_LEGACY] User name resolved: {user_name or 'Unknown'}")
 
-        # Create agent with per-user database (no tools)
-        db_file = os.path.join(self._db_dir, f"agent_{username}.db")
-
         instructions = FINANCIAL_ADVISER_SYSTEM_PROMPT
         if user_name:
             instructions = f"{FINANCIAL_ADVISER_SYSTEM_PROMPT}\n\nYou're speaking with {user_name}."
 
+        # Create agent with PostgreSQL storage (no tools)
         agent = Agent(
             name="Jamie (Financial Educator)",
             model=OpenAIChat(id="gpt-4o"),
             instructions=instructions,
-            db=SqliteDb(db_file=db_file),
+            db=PostgresDb(
+                db_url=settings.SYNC_DATABASE_URL,
+                session_table="agno_sessions_legacy"
+            ),
             user_id=username,
             add_history_to_context=True,
             num_history_runs=10,
