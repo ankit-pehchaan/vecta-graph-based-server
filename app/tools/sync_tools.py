@@ -5,13 +5,18 @@ to avoid asyncio event loop conflicts when Agno runs tools in threads.
 """
 
 import json
+import logging
 from typing import Optional
 from openai import OpenAI
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session, sessionmaker, selectinload
 from app.models.user import User
-from app.models.financial import Asset, Liability, Insurance, Superannuation
+from app.models.financial import Asset, Liability, Insurance, Superannuation, Goal
 from app.tools.goal_discoverer import should_probe_for_goal
+
+# Configure logger (set to WARNING to disable verbose debug logs)
+logger = logging.getLogger("sync_tools")
+logger.setLevel(logging.WARNING)
 
 
 def _get_sync_session(db_url: str) -> Session:
@@ -23,6 +28,7 @@ def _get_sync_session(db_url: str) -> Session:
 
 def _get_user_store(session: Session, email: str) -> dict:
     """Load user store from database (sync version)."""
+    logger.debug(f"[GET_STORE] Loading store for email: {email}")
     stmt = (
         select(User)
         .options(
@@ -37,7 +43,10 @@ def _get_user_store(session: Session, email: str) -> dict:
     user = session.execute(stmt).scalar_one_or_none()
 
     if not user:
+        logger.warning(f"[GET_STORE] User NOT FOUND for email: {email} - returning empty store")
         return _get_empty_store()
+
+    logger.debug(f"[GET_STORE] User found: {user.id}, goal: {user.user_goal}, phase: {user.conversation_phase}")
 
     # Build store from user model
     debts = []
@@ -71,12 +80,12 @@ def _get_user_store(session: Session, email: str) -> dict:
         elif super_record.notes and "voluntary" in super_record.notes.lower():
             super_voluntary = True
 
-    # Build superannuation dict
-    superannuation_data = {}
-    if super_balance > 0:
-        superannuation_data["balance"] = super_balance
-    if super_voluntary is not None:
-        superannuation_data["voluntary_contribution"] = super_voluntary
+    # Build superannuation dict with reference structure
+    superannuation_data = {
+        "balance": super_balance if super_balance > 0 else None,
+        "employer_contribution": 11.5,  # Default Australian rate
+        "voluntary_contribution": super_voluntary
+    }
 
     # Build insurance info
     life_insurance = None
@@ -93,12 +102,21 @@ def _get_user_store(session: Session, email: str) -> dict:
         if liability.liability_type == "hecs":
             hecs_debt = liability.amount
 
+    # Build all_goals as combination of stated + discovered
+    stated = user.stated_goals or []
+    discovered = user.discovered_goals or []
+    all_goals = list(set(stated + [g.get("goal", g) if isinstance(g, dict) else g for g in discovered]))
+
     return {
+        # Goal info
         "user_goal": user.user_goal,
         "goal_classification": user.goal_classification,
-        "stated_goals": user.stated_goals or [],
-        "discovered_goals": user.discovered_goals or [],
+        "stated_goals": stated,
+        "discovered_goals": discovered,
         "critical_concerns": user.critical_concerns or [],
+        "all_goals": all_goals,
+
+        # User profile
         "age": user.age,
         "monthly_income": user.monthly_income,
         "monthly_expenses": user.expenses,
@@ -113,8 +131,12 @@ def _get_user_store(session: Session, email: str) -> dict:
         "private_health_insurance": private_health_insurance,
         "superannuation": superannuation_data,
         "hecs_debt": hecs_debt,
+
+        # Goal-specific
         "timeline": user.timeline,
         "target_amount": user.target_amount,
+
+        # System fields
         "required_fields": user.required_fields or [],
         "missing_fields": user.missing_fields or [],
         "risk_profile": user.risk_profile,
@@ -124,13 +146,17 @@ def _get_user_store(session: Session, email: str) -> dict:
 
 
 def _get_empty_store() -> dict:
-    """Returns an empty store structure."""
+    """Returns an empty store structure matching reference implementation."""
     return {
+        # Goal info
         "user_goal": None,
         "goal_classification": None,
-        "stated_goals": [],
-        "discovered_goals": [],
-        "critical_concerns": [],
+        "stated_goals": [],  # Goals user mentioned upfront
+        "discovered_goals": [],  # Goals discovered during assessment (user confirmed)
+        "critical_concerns": [],  # Critical issues user denied but need to address
+        "all_goals": [],  # Combined: stated_goals + discovered_goals
+
+        # User profile
         "age": None,
         "monthly_income": None,
         "monthly_expenses": None,
@@ -143,15 +169,23 @@ def _get_empty_store() -> dict:
         "job_stability": None,
         "life_insurance": None,
         "private_health_insurance": None,
-        "superannuation": {},
+        "superannuation": {
+            "balance": None,
+            "employer_contribution": 11.5,  # Default Australian rate
+            "voluntary_contribution": None
+        },
         "hecs_debt": None,
+
+        # Goal-specific
         "timeline": None,
         "target_amount": None,
+
+        # System fields
         "required_fields": [],
         "missing_fields": [],
         "risk_profile": None,
-        "conversation_phase": "initial",
-        "pending_probe": None,
+        "conversation_phase": "initial",  # initial, assessment, analysis, planning
+        "pending_probe": None,  # Stores current probing question if any
     }
 
 
@@ -161,9 +195,15 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
     Handles both scalar fields on User model and complex fields that need
     to be persisted to related tables (Liability, Asset, Insurance, Superannuation).
     """
+    logger.info(f"[UPDATE_STORE] Updating store for email: {email}")
+    logger.info(f"[UPDATE_STORE] Updates: {json.dumps(updates, default=str)[:500]}")
+
     user = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user:
+        logger.error(f"[UPDATE_STORE] USER NOT FOUND for email: {email} - CANNOT PERSIST DATA!")
         return
+
+    logger.debug(f"[UPDATE_STORE] Found user ID: {user.id}")
 
     # Scalar field mapping: store_key -> user_model_attribute
     field_mapping = {
@@ -191,7 +231,10 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
 
     for source_key, target_key in field_mapping.items():
         if source_key in updates:
-            setattr(user, target_key, updates[source_key])
+            old_value = getattr(user, target_key, None)
+            new_value = updates[source_key]
+            setattr(user, target_key, new_value)
+            logger.debug(f"[UPDATE_STORE] Set {target_key}: {old_value} → {new_value}")
 
     # Handle complex fields that go to related tables
 
@@ -366,6 +409,7 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
                 session.add(new_super)
 
     session.commit()
+    logger.info(f"[UPDATE_STORE] Successfully committed updates for user: {email}")
 
 
 # =============================================================================
@@ -385,6 +429,7 @@ GOAL_CLASSIFICATIONS = {
 
 def sync_classify_goal(user_goal: str, db_url: str, session_id: str) -> dict:
     """Classify user's financial goal (sync version)."""
+    logger.info(f"[TOOL:classify_goal] Called with goal: {user_goal[:50]}, session: {session_id}")
     client = OpenAI()
 
     classifications_text = "\n".join([f"- {k}: {v}" for k, v in GOAL_CLASSIFICATIONS.items()])
@@ -402,22 +447,52 @@ Respond with JSON:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a financial goal classifier. Always respond with valid JSON."},
+                {"role": "system", "content": "You are a financial goal classifier. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3
+            temperature=0.3,
+            response_format={"type": "json_object"}  # Force JSON output
         )
 
-        result = json.loads(response.choices[0].message.content)
+        raw_content = response.choices[0].message.content
+        logger.debug(f"[TOOL:classify_goal] Raw response: {raw_content[:100]}")
+
+        try:
+            result = json.loads(raw_content)
+        except json.JSONDecodeError:
+            logger.warning(f"[TOOL:classify_goal] Could not parse response: {raw_content[:100]}")
+            result = {"classification": "life_event", "reasoning": "Default classification"}
 
         # Update store
         session = _get_sync_session(db_url)
         try:
+            # Update user fields
             _update_user_store(session, session_id, {
                 "user_goal": user_goal,
                 "goal_classification": result["classification"],
                 "conversation_phase": "assessment"
             })
+
+            # Also create a Goal record in the Goals table
+            user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+            if user:
+                # Check if goal already exists
+                existing_goal = session.execute(
+                    select(Goal).where(
+                        Goal.user_id == user.id,
+                        Goal.description == user_goal
+                    )
+                ).scalar_one_or_none()
+
+                if not existing_goal:
+                    new_goal = Goal(
+                        user_id=user.id,
+                        description=user_goal,
+                        priority="high"  # Primary goal is high priority
+                    )
+                    session.add(new_goal)
+                    session.commit()
+                    logger.info(f"[TOOL:classify_goal] Created Goal record: {user_goal}")
         finally:
             session.close()
 
@@ -442,6 +517,9 @@ def sync_extract_financial_facts(
     session_id: str
 ) -> dict:
     """Extract financial facts from user's message (sync version)."""
+    logger.info(f"[TOOL:extract_facts] Called for session: {session_id}")
+    logger.info(f"[TOOL:extract_facts] User message: {user_message[:100]}")
+    logger.info(f"[TOOL:extract_facts] Last question: {agent_last_question[:100] if agent_last_question else 'None'}")
     client = OpenAI()
     session = _get_sync_session(db_url)
 
@@ -541,21 +619,59 @@ If nothing to extract, return: {{}}"""
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a financial data extractor. Always respond with valid JSON."},
+                {"role": "system", "content": "You are a financial data extractor. Always respond with valid JSON only. No markdown, no explanation."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1
+            temperature=0.1,
+            response_format={"type": "json_object"}  # Force JSON output
         )
 
-        extracted_facts = json.loads(response.choices[0].message.content)
+        raw_content = response.choices[0].message.content
+        logger.debug(f"[TOOL:extract_facts] Raw LLM response: {raw_content[:200]}")
+
+        # Parse JSON with fallback
+        try:
+            extracted_facts = json.loads(raw_content)
+        except json.JSONDecodeError:
+            # Try to extract JSON from markdown code blocks
+            import re
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_content)
+            if json_match:
+                extracted_facts = json.loads(json_match.group(1))
+            else:
+                logger.warning(f"[TOOL:extract_facts] Could not parse response as JSON: {raw_content[:100]}")
+                extracted_facts = {}
+
+        logger.info(f"[TOOL:extract_facts] Extracted: {json.dumps(extracted_facts, default=str)[:500]}")
 
         # Handle user_goals
         user_goals = extracted_facts.pop("user_goals", [])
         if user_goals:
             stated_goals = current_store.get("stated_goals", [])
+            user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+
             for goal in user_goals:
                 if goal not in stated_goals:
                     stated_goals.append(goal)
+
+                    # Also create Goal record in Goals table
+                    if user:
+                        existing_goal = session.execute(
+                            select(Goal).where(
+                                Goal.user_id == user.id,
+                                Goal.description == goal
+                            )
+                        ).scalar_one_or_none()
+
+                        if not existing_goal:
+                            new_goal = Goal(
+                                user_id=user.id,
+                                description=goal,
+                                priority="medium"  # Secondary goals are medium priority
+                            )
+                            session.add(new_goal)
+                            logger.info(f"[TOOL:extract_facts] Created Goal record: {goal}")
+
             _update_user_store(session, session_id, {"stated_goals": stated_goals})
 
         # Update store with extracted facts
@@ -581,6 +697,9 @@ If nothing to extract, return: {{}}"""
         }
 
     except Exception as e:
+        logger.error(f"[TOOL:extract_facts] ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"extracted_facts": {}, "error": str(e)}
     finally:
         session.close()
