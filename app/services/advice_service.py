@@ -43,6 +43,7 @@ from app.core.prompts import (
     DOCUMENT_CONTINUATION_NO_DATA,
     DOCUMENT_REJECTION_CONTINUATION,
 )
+import re
 
 # Configure logger
 logger = logging.getLogger("advice_service")
@@ -88,6 +89,58 @@ class AdviceService:
         # Cross-turn state (process singleton) for gating visualization behavior.
         self._profile_ready_by_user: dict[str, bool] = {}
         self._holistic_snapshot_sent: Set[str] = set()
+        # Track last agent question for context passing to extraction tool
+        self._last_agent_questions: dict[str, str] = {}
+
+    @property
+    def _use_tool_based_agent(self) -> bool:
+        """Check if tool-based agent is enabled via feature flag."""
+        # Check environment variable or settings
+        if hasattr(settings, "USE_TOOL_BASED_AGENT"):
+            return getattr(settings, "USE_TOOL_BASED_AGENT", True)
+        import os
+        return os.getenv("USE_TOOL_BASED_AGENT", "true").lower() == "true"
+
+    def _parse_response_format(self, raw_response: str) -> str:
+        """
+        Parse REASONING/RESPONSE format from tool-based agent.
+        Returns only the RESPONSE portion for user.
+
+        Format expected:
+        REASONING: [internal debugging notes]
+        RESPONSE: [user-facing message]
+        """
+        if not raw_response:
+            return raw_response
+
+        # Try to extract RESPONSE section
+        response_pattern = r'RESPONSE:\s*(.*?)(?:$)'
+        match = re.search(response_pattern, raw_response, re.DOTALL | re.IGNORECASE)
+
+        if match:
+            user_response = match.group(1).strip()
+            # Clean up any trailing code block markers
+            user_response = re.sub(r'```\s*$', '', user_response).strip()
+            return user_response
+
+        # If no RESPONSE marker found, check if there's a REASONING section to remove
+        if 'REASONING:' in raw_response.upper():
+            # Try to split by RESPONSE:
+            parts = re.split(r'RESPONSE:', raw_response, flags=re.IGNORECASE)
+            if len(parts) > 1:
+                return parts[-1].strip()
+
+        # Fallback: return as-is if format not detected
+        return raw_response
+
+    def _extract_last_question(self, response: str) -> str:
+        """Extract the last question from agent response for context tracking."""
+        # Look for question marks
+        sentences = re.split(r'(?<=[.!?])\s+', response)
+        for sentence in reversed(sentences):
+            if '?' in sentence:
+                return sentence.strip()
+        return ""
 
     def _is_visualization_enabled(self) -> bool:
         if hasattr(settings, "VISUALIZATION_ENABLED") and not getattr(settings, "VISUALIZATION_ENABLED"):
@@ -375,16 +428,13 @@ class AdviceService:
         user_message: str
     ) -> AsyncGenerator[dict, None]:
         """
-        Process user message through the optimized 3-stage pipeline and stream response.
+        Process user message through the agent and stream response.
 
-        Uses the optimized pipeline:
-        1. Context Assessment (combined intent + validation + strategy) - PARALLEL with 2
-        2. Data Extraction - PARALLEL with 1
-        3. Response Generation (Jamie)
+        Uses either:
+        - Tool-based agent (new architecture from vecta-financial-educator-main)
+        - Education pipeline (legacy 3-stage approach)
 
-        Background: Output QA runs after response is sent, sends corrections if needed.
-
-        EARLY INTENT FILTER: Visualization requests bypass Jamie pipeline entirely.
+        Based on USE_TOOL_BASED_AGENT feature flag.
 
         Yields:
             Agent response chunks, profile updates
@@ -399,7 +449,7 @@ class AdviceService:
             self._conversation_contexts[username] += f"\nUser: {user_message}\n"
 
             # =====================================================================
-            # EARLY INTENT FILTER: Visualization requests bypass Jamie pipeline
+            # EARLY INTENT FILTER: Visualization requests bypass main pipeline
             # =====================================================================
             if self._is_visualization_request(user_message):
                 logger.info("[PROCESS] Visualization request detected - using dedicated flow")
@@ -407,6 +457,18 @@ class AdviceService:
                     yield msg
                 return
 
+            # =====================================================================
+            # TOOL-BASED AGENT (New Architecture)
+            # =====================================================================
+            if self._use_tool_based_agent and self.db_manager:
+                logger.info("[PROCESS] Using TOOL-BASED AGENT for processing")
+                async for msg in self._process_with_tool_agent(websocket, username, user_message):
+                    yield msg
+                return
+
+            # =====================================================================
+            # LEGACY: Education Pipeline (3-Stage)
+            # =====================================================================
             # Use education pipeline if available
             if self.education_pipeline:
                 logger.info("[PROCESS] Using EducationPipeline (OPTIMIZED 3-STAGE) for processing")
@@ -546,6 +608,118 @@ class AdviceService:
                 timestamp=datetime.now(timezone.utc).isoformat()
             ).model_dump()
     
+    async def _process_with_tool_agent(
+        self,
+        websocket: WebSocket,
+        username: str,
+        user_message: str
+    ) -> AsyncGenerator[dict, None]:
+        """
+        Process user message with the new tool-based agent.
+
+        The agent uses tools to:
+        1. classify_goal - Classify user goals
+        2. extract_financial_facts - Extract data from messages
+        3. determine_required_info - Check what info is missing
+        4. calculate_risk_profile - Calculate risk when complete
+        5. generate_visualization - Create charts/graphs
+
+        Yields:
+            Agent response chunks, profile updates, visualizations
+        """
+        logger.info(f"[TOOL_AGENT] Processing with tool-based agent for {username}")
+
+        try:
+            # Get last question for context
+            last_question = self._last_agent_questions.get(username, "")
+
+            async for session in self.db_manager.get_session():
+                # Get tool-based agent with session
+                agent = await self.agent_service.get_agent_with_session(username, session)
+
+                # Run agent with tools
+                logger.debug(f"[TOOL_AGENT] Calling agent.arun() with message: {user_message[:50]}...")
+                response = await agent.arun(user_message)
+                raw_response = response.content if hasattr(response, 'content') else str(response)
+
+                logger.debug(f"[TOOL_AGENT] Raw response length: {len(raw_response)}")
+
+                # Parse REASONING/RESPONSE format
+                user_facing_response = self._parse_response_format(raw_response)
+                logger.debug(f"[TOOL_AGENT] Parsed response: {user_facing_response[:100]}...")
+
+                # Track last question for next turn
+                last_q = self._extract_last_question(user_facing_response)
+                if last_q:
+                    self._last_agent_questions[username] = last_q
+
+                # Stream the response in chunks
+                response_id = str(uuid.uuid4())
+                chunk_size = 5
+
+                for i in range(0, len(user_facing_response), chunk_size):
+                    chunk = user_facing_response[i:i + chunk_size]
+                    if chunk:
+                        agent_response = AgentResponse(
+                            content=chunk,
+                            is_complete=False,
+                            timestamp=datetime.now(timezone.utc).isoformat()
+                        )
+                        yield agent_response.model_dump()
+
+                # Mark final chunk as complete
+                final_response = AgentResponse(
+                    content="",
+                    is_complete=True,
+                    timestamp=datetime.now(timezone.utc).isoformat()
+                )
+                yield final_response.model_dump()
+
+                # Update conversation context
+                self._conversation_contexts[username] += f"Vecta: {user_facing_response}\n"
+
+                # Get updated profile from database
+                profile_repo = FinancialProfileRepository(session)
+                profile_data = await profile_repo.get_by_email(username)
+
+                if profile_data:
+                    profile = FinancialProfile(**profile_data)
+                    profile_update = ProfileUpdate(
+                        profile=profile,
+                        changes={},  # Tools update directly, no explicit changes tracking
+                        timestamp=datetime.now(timezone.utc).isoformat()
+                    )
+                    yield profile_update.model_dump(mode='json')
+
+                # Launch background visualization (non-blocking)
+                asyncio.create_task(
+                    self._background_visualization(
+                        websocket,
+                        username,
+                        user_message,
+                        user_facing_response,
+                        profile_data or {}
+                    )
+                )
+
+                # Log agent tool usage if available
+                if hasattr(response, 'tools_used'):
+                    logger.info(f"[TOOL_AGENT] Tools used: {response.tools_used}")
+
+                break  # Exit the async for session loop
+
+        except Exception as e:
+            logger.error(f"[TOOL_AGENT] Error processing with tool agent: {e}")
+            import traceback
+            traceback.print_exc()
+
+            error_msg = f"I had trouble processing that. Could you try rephrasing?"
+            yield ErrorMessage(
+                message=error_msg,
+                code="TOOL_AGENT_ERROR",
+                timestamp=datetime.now(timezone.utc).isoformat()
+            ).model_dump()
+
     async def _extract_and_send_profile_update(
         self,
         websocket: WebSocket,

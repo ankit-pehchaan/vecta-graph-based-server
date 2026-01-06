@@ -13,6 +13,7 @@ from app.services.viz_intent_agent_service import (
     CardSpec,
     LoanVizInputs,
     ProfileDeltaInputs,
+    SimpleProjectionInputs,
 )
 from app.core.config import settings
 from app.services.finance_calculators import FREQUENCY_PER_YEAR, amortize_balance_trajectory
@@ -321,6 +322,8 @@ class VisualizationService:
                 return self._build_loan_viz(card.loan, card)
             if (card.calc_kind or "").strip() == "profile_delta" and card.profile_delta:
                 return self._build_profile_delta_viz(card.profile_delta, card)
+            if (card.calc_kind or "").strip() == "simple_projection" and card.simple_projection:
+                return self._build_simple_projection_viz(card.simple_projection, card)
 
         return None
 
@@ -445,6 +448,83 @@ class VisualizationService:
             meta={
                 "generated_at": _now_iso(),
                 "viz_kind": "profile_delta",
+                "confidence": card.confidence,
+            },
+        )
+
+    def _build_simple_projection_viz(self, projection: SimpleProjectionInputs, card: CardSpec) -> VisualizationMessage:
+        """
+        Build a simple projection visualization showing cumulative amounts over time.
+
+        Used for rent, recurring expenses, savings contributions, etc.
+        """
+        monthly_amount = projection.monthly_amount
+        years = projection.years
+        annual_increase = projection.annual_increase_percent / 100.0
+
+        # Calculate yearly cumulative totals
+        points: list[VizPoint] = []
+        cumulative = 0.0
+        current_monthly = monthly_amount
+
+        for year in range(years + 1):
+            if year == 0:
+                points.append(VizPoint(x=0, y=0.0))
+            else:
+                yearly_total = current_monthly * 12
+                cumulative += yearly_total
+                points.append(VizPoint(x=year, y=float(cumulative)))
+                # Apply annual increase for next year
+                current_monthly *= (1 + annual_increase)
+
+        total_amount = cumulative
+        average_yearly = total_amount / years if years > 0 else 0
+
+        # Build narrative
+        narrative_parts = [
+            f"Over {years} years, total {projection.label.lower()} spending would be approximately {total_amount:,.0f} {projection.currency}."
+        ]
+        if annual_increase > 0:
+            narrative_parts.append(
+                f"This assumes an annual increase of {projection.annual_increase_percent:.1f}%."
+            )
+        narrative_parts.append(
+            f"Average yearly: {average_yearly:,.0f} {projection.currency}."
+        )
+
+        title = card.title or f"{projection.label} projection"
+        subtitle = card.subtitle or f"{monthly_amount:,.0f} {projection.currency}/month over {years} years"
+
+        assumptions = [
+            f"Starting monthly amount: {monthly_amount:,.0f} {projection.currency}",
+        ]
+        if annual_increase > 0:
+            assumptions.append(f"Annual increase: {projection.annual_increase_percent:.1f}%")
+        else:
+            assumptions.append("No annual increase assumed")
+
+        return VisualizationMessage(
+            viz_id=str(uuid.uuid4()),
+            title=title,
+            subtitle=subtitle,
+            narrative=card.narrative or " ".join(narrative_parts),
+            chart=VizChart(
+                kind="line",
+                x_label="Year",
+                y_label=f"Cumulative {projection.label}",
+                y_unit=projection.currency,
+            ),
+            series=[
+                VizSeries(name=f"Cumulative {projection.label}", data=points),
+            ],
+            explore_next=card.explore_next or [
+                f"What if I reduced my {projection.label.lower()} by 20%?",
+                f"Compare {projection.label.lower()} vs buying/investing",
+            ],
+            assumptions=(card.assumptions or []) + assumptions,
+            meta={
+                "generated_at": _now_iso(),
+                "viz_kind": "simple_projection",
                 "confidence": card.confidence,
             },
         )
