@@ -246,7 +246,7 @@ class AgnoAgentService:
         agent = Agent(
             id=f"finance-educator-{username}",
             name="Vecta - Financial Educator",
-            model=OpenAIChat(id="gpt-4o"),
+            model=OpenAIChat(id="gpt-4.1"),
             instructions=instructions,
             tools=tools,
             db=SqliteDb(db_file=db_file),
