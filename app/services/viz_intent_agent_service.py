@@ -41,6 +41,17 @@ class ProfileDeltaInputs(BaseModel):
     currency: Literal["AUD", "USD", "EUR", "GBP", "NZD"] = Field(default="AUD")
 
 
+class SimpleProjectionInputs(BaseModel):
+    """Inputs for a simple recurring expense/income projection over time."""
+    model_config = ConfigDict(extra="ignore")
+
+    label: str = Field(..., description="Label for the projection (e.g., 'Rent', 'Savings', 'Mortgage').")
+    monthly_amount: float = Field(..., gt=0, description="Monthly amount in currency units.")
+    years: int = Field(..., ge=1, le=50, description="Number of years to project.")
+    annual_increase_percent: float = Field(default=0.0, description="Annual increase rate (e.g., 3 for 3% rent increase).")
+    currency: Literal["AUD", "USD", "EUR", "GBP", "NZD"] = Field(default="AUD")
+
+
 class TableSpec(BaseModel):
     """Simple table spec for in-chat rendering (safe: string cells)."""
     model_config = ConfigDict(extra="ignore")
@@ -101,6 +112,7 @@ class CardSpec(BaseModel):
     calc_kind: Optional[str] = None
     loan: Optional[LoanVizInputs] = None
     profile_delta: Optional[ProfileDeltaInputs] = None
+    simple_projection: Optional[SimpleProjectionInputs] = None
 
     table: Optional[TableSpec] = None
     scorecard: Optional[ScorecardSpec] = None
@@ -154,6 +166,7 @@ class VizIntentAgentService:
                 "- If you use calc_kind:\n"
                 "  - Use calc_kind='loan_amortization' only when principal, rate, and term are explicit.\n"
                 "  - Use calc_kind='profile_delta' only when the user explicitly asks for a before/after comparison AND old/new or delta% is explicit.\n"
+                "  - Use calc_kind='simple_projection' for recurring expense/income projections over time (e.g., 'show my rent over 10 years'). Requires monthly_amount and years.\n"
                 "- Do NOT output render_type='table'/'scorecard'/'timeline' unless the server can compute every numeric value deterministically (generally: avoid these).\n"
             ),
             db=agno_db(db_file),

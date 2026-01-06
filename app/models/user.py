@@ -1,7 +1,7 @@
 """User SQLAlchemy model."""
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-from sqlalchemy import String, Integer, Float, DateTime, Boolean
+from sqlalchemy import String, Integer, Float, DateTime, Boolean, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from app.core.constants import AccountStatus
@@ -61,7 +61,29 @@ class User(Base):
     financial_stage: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )  # Assessment of financial maturity
-    
+
+    # Additional financial fields (from store_manager)
+    savings: Mapped[float | None] = mapped_column(Float, nullable=True)
+    emergency_fund: Mapped[float | None] = mapped_column(Float, nullable=True)
+    job_stability: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    dependents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timeline: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Conversation state fields (for tool-based agent)
+    user_goal: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    goal_classification: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    conversation_phase: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, default="initial"
+    )  # initial, assessment, analysis, planning
+    stated_goals: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    discovered_goals: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    critical_concerns: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    required_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    missing_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    pending_probe: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    risk_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -127,6 +149,24 @@ class User(Base):
             "expenses": self.expenses,
             "risk_tolerance": self.risk_tolerance,
             "financial_stage": self.financial_stage,
+            # Additional financial fields
+            "savings": self.savings,
+            "emergency_fund": self.emergency_fund,
+            "job_stability": self.job_stability,
+            "dependents": self.dependents,
+            "timeline": self.timeline,
+            "target_amount": self.target_amount,
+            # Conversation state
+            "user_goal": self.user_goal,
+            "goal_classification": self.goal_classification,
+            "conversation_phase": self.conversation_phase,
+            "stated_goals": self.stated_goals,
+            "discovered_goals": self.discovered_goals,
+            "critical_concerns": self.critical_concerns,
+            "required_fields": self.required_fields,
+            "missing_fields": self.missing_fields,
+            "pending_probe": self.pending_probe,
+            "risk_profile": self.risk_profile,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -154,8 +194,28 @@ class User(Base):
             "income": self.income,
             "monthly_income": self.monthly_income,
             "expenses": self.expenses,
+            "monthly_expenses": self.expenses,  # Alias for store compatibility
             "risk_tolerance": self.risk_tolerance,
             "financial_stage": self.financial_stage,
+            # Additional financial fields
+            "savings": self.savings,
+            "emergency_fund": self.emergency_fund,
+            "job_stability": self.job_stability,
+            "dependents": self.dependents,
+            "timeline": self.timeline,
+            "target_amount": self.target_amount,
+            # Conversation state
+            "user_goal": self.user_goal,
+            "goal_classification": self.goal_classification,
+            "conversation_phase": self.conversation_phase,
+            "stated_goals": self.stated_goals or [],
+            "discovered_goals": self.discovered_goals or [],
+            "critical_concerns": self.critical_concerns or [],
+            "required_fields": self.required_fields or [],
+            "missing_fields": self.missing_fields or [],
+            "pending_probe": self.pending_probe,
+            "risk_profile": self.risk_profile,
+            # Related entities
             "goals": [g.to_dict() for g in self.goals] if self.goals else [],
             "assets": [a.to_dict() for a in self.assets] if self.assets else [],
             "liabilities": [l.to_dict() for l in self.liabilities] if self.liabilities else [],

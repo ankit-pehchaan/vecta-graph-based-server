@@ -1,21 +1,22 @@
 """
-Agno Agent Service.
+Agno Agent Service - Tool-Based Architecture.
 
-Provides agent management and greeting generation.
-The main conversation processing is now handled by EducationPipeline.
-This service is maintained for backward compatibility and greeting logic.
+Provides agent management with tool-based conversation flow.
+Replaces EducationPipeline with single agent + tools approach.
 """
 
 import os
 import logging
-from typing import Optional
+from typing import Optional, Callable, Any
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.db.sqlite import SqliteDb
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories.user_repository import UserRepository
 from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.core.config import settings
 from app.core.prompts import (
+    AGENT_PROMPT_V2,
     FINANCIAL_ADVISER_SYSTEM_PROMPT,
     GREETING_FIRST_TIME,
     GREETING_RETURNING_WITH_SUMMARY,
@@ -38,16 +39,17 @@ if not logger.handlers:
 
 
 class AgnoAgentService:
-    """Service for managing Agno financial educator agents.
+    """Service for managing Agno financial educator agents with tools.
 
     Creates and reuses agents per user for performance (per .cursorrules).
-    Each user gets their own agent instance with session history.
+    Each user gets their own agent instance with session history and tools.
     Uses db_manager for fresh database sessions per operation.
     """
 
     def __init__(self, db_manager):
         self.db_manager = db_manager
         self._agents: dict[str, Agent] = {}  # Cache agents per user
+        self._legacy_agents: dict[str, Agent] = {}  # Legacy agents without tools
         self._db_dir = "tmp/agents"
 
         # Create directory for agent databases if it doesn't exist
@@ -57,33 +59,227 @@ class AgnoAgentService:
         if settings.OPENAI_API_KEY:
             os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
 
-        logger.info("AgnoAgentService initialized")
+        logger.info("AgnoAgentService initialized with tool-based architecture")
 
-    def _get_agent_instructions(self, user_name: Optional[str] = None) -> str:
-        """Get instructions for the financial educator agent."""
+    def _create_session_tools(self, session_id: str) -> list[Callable]:
+        """
+        Create session-bound tool functions for the agent.
+
+        Uses synchronous versions of tools to avoid asyncio event loop conflicts
+        when Agno runs tools in separate threads.
+
+        IMPORTANT: Tool names match what the prompt references (e.g., extract_financial_facts, not session_extract_facts).
+        """
+        from app.tools.sync_tools import (
+            sync_classify_goal,
+            sync_extract_financial_facts,
+            sync_determine_required_info,
+            sync_calculate_risk_profile,
+            sync_generate_visualization,
+        )
+
+        # Get sync database URL from settings
+        from app.core.config import settings
+        db_url = settings.SYNC_DATABASE_URL
+
+        def classify_goal(user_goal: str) -> dict:
+            """
+            Classifies the user's financial goal into categories.
+
+            Categories: small_purchase, medium_purchase, large_purchase, luxury, life_event, investment, emergency.
+
+            Args:
+                user_goal: The user's stated goal (e.g., "I want to buy a house")
+
+            Returns:
+                dict with:
+                - classification: The goal category
+                - reasoning: Brief explanation of why this category
+                - message: Confirmation message
+
+            When to call:
+            - When user first mentions a goal (directly or indirectly)
+            - Only call ONCE per conversation
+            - Don't call if goal already classified
+            """
+            return sync_classify_goal(user_goal, db_url, session_id)
+
+        def extract_financial_facts(user_message: str, agent_last_question: str = "") -> dict:
+            """
+            Extracts financial facts from user's message using LLM.
+
+            Args:
+                user_message: The user's latest message
+                agent_last_question: Your previous question for context (e.g., "What's your monthly income?")
+
+            Returns:
+                dict with:
+                - extracted_facts: Financial data extracted (age, income, debts, etc.)
+                - probing_suggestions: If a fact reveals a potential goal (e.g., high debt → goal to clear it)
+                - goal_confirmed/goal_denied: If user was responding to a previous goal probe
+                - stated_goals_added: Any goals mentioned by user
+
+            When to call:
+            - EVERY turn after goal is classified
+            - Always call this FIRST before other tools
+            - Pass your last question for context so the tool knows what the user is answering
+            - Even if you think nothing new was mentioned (let the tool decide)
+
+            If probing_suggestions is returned:
+            - Ask the probe_question immediately
+            - Next turn, this tool will detect if they confirmed or denied
+            - If confirmed → Goal added to discovered_goals
+            - If denied but critical → Tracked as critical_concern (bring up in Phase 3)
+            """
+            return sync_extract_financial_facts(user_message, agent_last_question, db_url, session_id)
+
+        def determine_required_info() -> dict:
+            """
+            Determines what information is still needed based on goal type.
+
+            Returns:
+                dict with:
+                - goal_type: The classified goal type
+                - required_fields: All fields needed for this goal
+                - missing_fields: Fields still needed (empty = ready for Phase 3)
+                - populated_fields: Fields already collected
+                - message: Summary of status
+
+            When to call:
+            - EVERY turn after extract_financial_facts
+            - This tells you what questions to ask next
+            - Check the "missing_fields" in the response
+            - If missing_fields is empty → Move to Phase 3
+            """
+            return sync_determine_required_info(db_url, session_id)
+
+        def calculate_risk_profile() -> dict:
+            """
+            Calculates objective risk assessment based on complete financial situation.
+
+            Returns:
+                dict with:
+                - risk_appetite: low, medium, or high
+                - agent_reason: Detailed explanation with specific numbers
+                - key_concerns: List of financial vulnerabilities
+                - strengths: List of financial strengths
+                - message: Summary
+
+            When to call:
+            - ONLY when missing_fields is EMPTY (all info gathered)
+            - Call this once before giving final analysis in Phase 3
+            - Don't call if missing_fields has items
+            """
+            return sync_calculate_risk_profile(db_url, session_id)
+
+        def generate_visualization(viz_type: str, params: dict = None) -> dict:
+            """
+            Generates charts and visualizations to help explain concepts.
+
+            Args:
+                viz_type: Type of visualization
+                    - "profile_snapshot": Balance sheet, asset mix, cashflow overview
+                    - "loan_amortization": Loan repayment trajectory (needs: principal, annual_rate_percent, term_years)
+                    - "goal_projection": Savings/expense projection over time (needs: label, monthly_amount, years)
+                params: Type-specific parameters (optional for profile_snapshot)
+
+            Returns:
+                dict with:
+                - success: Whether visualization was generated
+                - visualizations: List of visualization data
+                - message: Status message
+
+            When to call:
+            - In Phase 3 (Analysis) to show the user their financial picture
+            - When explaining loan scenarios or projections
+            - When user asks to "see" or "visualize" their situation
+            """
+            return sync_generate_visualization(viz_type, db_url, session_id, params)
+
+        # Return tools with names matching prompt references
+        return [
+            classify_goal,
+            extract_financial_facts,
+            determine_required_info,
+            calculate_risk_profile,
+            generate_visualization
+        ]
+
+    async def get_agent_with_session(self, username: str, session: AsyncSession) -> Agent:
+        """
+        Get or create a tool-enabled Agno agent for a user.
+
+        This is the new tool-based agent that uses:
+        - classify_goal
+        - extract_financial_facts
+        - determine_required_info
+        - calculate_risk_profile
+        - generate_visualization
+
+        Args:
+            username: Username to get agent for
+            session: Database session (used for user lookup only, tools create own sessions)
+
+        Returns:
+            Agent instance with tools
+        """
+        logger.debug(f"[GET_AGENT_V2] Requested tool-based agent for user: {username}")
+
+        # Get user info
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_email(username)
+        user_name = user.get("name") if user else None
+        logger.debug(f"[GET_AGENT_V2] User name resolved: {user_name or 'Unknown'}")
+
+        # Create tools (they create their own sessions internally)
+        tools = self._create_session_tools(username)
+        logger.debug(f"[GET_AGENT_V2] Created {len(tools)} tools")
+
+        # Create agent with per-user database and tools
+        db_file = os.path.join(self._db_dir, f"agent_{username}.db")
+
+        # Build instructions with user name if available
+        instructions = AGENT_PROMPT_V2
         if user_name:
-            return f"{FINANCIAL_ADVISER_SYSTEM_PROMPT}\n\nYou're speaking with {user_name}."
-        return FINANCIAL_ADVISER_SYSTEM_PROMPT
+            instructions = f"{AGENT_PROMPT_V2}\n\nYou're speaking with {user_name}."
+
+        agent = Agent(
+            id=f"finance-educator-{username}",
+            name="Vecta - Financial Educator",
+            model=OpenAIChat(id="gpt-4o"),
+            instructions=instructions,
+            tools=tools,
+            db=SqliteDb(db_file=db_file),
+            user_id=username,
+            add_history_to_context=True,
+            num_history_runs=5,
+            enable_session_summaries=True,
+            markdown=True,
+            debug_mode=False
+        )
+
+        logger.info(f"[GET_AGENT_V2] Created tool-based agent for: {username}")
+        return agent
 
     async def get_agent(self, username: str) -> Agent:
         """
-        Get or create an Agno agent for a user.
+        Get or create an Agno agent for a user (legacy method without tools).
 
-        Reuses existing agent if available (per .cursorrules - never create agents in loops).
+        Maintained for backward compatibility. For new code, use get_agent_with_session().
 
         Args:
             username: Username to get agent for
 
         Returns:
-            Agent instance for the user
+            Agent instance for the user (without tools)
         """
-        logger.debug(f"[GET_AGENT] Requested agent for user: {username}")
+        logger.debug(f"[GET_AGENT_LEGACY] Requested agent for user: {username}")
 
-        if username in self._agents:
-            logger.debug(f"[GET_AGENT] Returning cached agent for: {username}")
-            return self._agents[username]
+        if username in self._legacy_agents:
+            logger.debug(f"[GET_AGENT_LEGACY] Returning cached agent for: {username}")
+            return self._legacy_agents[username]
 
-        logger.debug(f"[GET_AGENT] Creating new agent for: {username}")
+        logger.debug(f"[GET_AGENT_LEGACY] Creating new legacy agent for: {username}")
 
         # Get user info with fresh session
         user = None
@@ -92,26 +288,30 @@ class AgnoAgentService:
             user = await user_repo.get_by_email(username)
 
         user_name = user.get("name") if user else None
-        logger.debug(f"[GET_AGENT] User name resolved: {user_name or 'Unknown'}")
+        logger.debug(f"[GET_AGENT_LEGACY] User name resolved: {user_name or 'Unknown'}")
 
-        # Create agent with per-user database
+        # Create agent with per-user database (no tools)
         db_file = os.path.join(self._db_dir, f"agent_{username}.db")
+
+        instructions = FINANCIAL_ADVISER_SYSTEM_PROMPT
+        if user_name:
+            instructions = f"{FINANCIAL_ADVISER_SYSTEM_PROMPT}\n\nYou're speaking with {user_name}."
 
         agent = Agent(
             name="Jamie (Financial Educator)",
             model=OpenAIChat(id="gpt-4o"),
-            instructions=self._get_agent_instructions(user_name),
+            instructions=instructions,
             db=SqliteDb(db_file=db_file),
             user_id=username,
             add_history_to_context=True,
-            num_history_runs=10,  # Keep last 10 conversations in context
+            num_history_runs=10,
             markdown=True,
             debug_mode=False
         )
 
         # Cache agent for reuse
-        self._agents[username] = agent
-        logger.info(f"[GET_AGENT] Created and cached new agent for: {username}")
+        self._legacy_agents[username] = agent
+        logger.info(f"[GET_AGENT_LEGACY] Created and cached legacy agent for: {username}")
 
         return agent
 
@@ -135,7 +335,7 @@ class AgnoAgentService:
             return is_first
 
         logger.debug(f"[FIRST_TIME_CHECK] Session failed for {username}, defaulting to first-time")
-        return True  # Default to first-time if session fails
+        return True
 
     async def get_conversation_summary(self, username: str) -> Optional[str]:
         """
@@ -231,3 +431,19 @@ class AgnoAgentService:
 
         logger.debug(f"[GREETING] Generated: {greeting[:50]}...")
         return greeting
+
+    def clear_agent_cache(self, username: Optional[str] = None):
+        """
+        Clear cached agents.
+
+        Args:
+            username: Specific user to clear, or None to clear all
+        """
+        if username:
+            self._agents.pop(username, None)
+            self._legacy_agents.pop(username, None)
+            logger.info(f"[CACHE] Cleared agent cache for: {username}")
+        else:
+            self._agents.clear()
+            self._legacy_agents.clear()
+            logger.info("[CACHE] Cleared all agent caches")

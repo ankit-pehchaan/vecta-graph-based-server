@@ -97,6 +97,28 @@ class Settings(BaseSettings):
 
         # Build URL from individual settings
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+
+    @computed_field
+    @property
+    def SYNC_DATABASE_URL(self) -> str:
+        """
+        Compute synchronous database URL for use in tools running in separate threads.
+
+        Returns:
+            str: PostgreSQL connection URL for psycopg2 (sync driver)
+        """
+        if self.DATABASE_URL:
+            url = self.DATABASE_URL
+            # Remove any async driver specification
+            url = url.replace("postgresql+asyncpg://", "postgresql://")
+            url = url.replace("postgresql+psycopg://", "postgresql://")
+            # Ensure plain postgresql:// for sync access
+            if not url.startswith("postgresql://"):
+                url = f"postgresql://{url}"
+            return url
+
+        # Build URL from individual settings (plain postgresql for sync)
+        return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
     
     # OTP Configuration
     OTP_EXPIRY_MINUTES: int = Field(default=3, description="OTP expiration time in minutes")
