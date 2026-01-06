@@ -235,7 +235,7 @@ class AgnoAgentService:
         agent = Agent(
             id=f"finance-educator-{username}",
             name="Vecta - Financial Educator",
-            model=OpenAIChat(id="gpt-4o"),  # Use gpt-4o (gpt-4.1 doesn't exist)
+            model=OpenAIChat(id="gpt-4.1"),
             instructions=instructions,
             tools=tools,
             db=PostgresDb(
@@ -291,7 +291,7 @@ class AgnoAgentService:
         # Create agent with PostgreSQL storage (no tools)
         agent = Agent(
             name="Jamie (Financial Educator)",
-            model=OpenAIChat(id="gpt-4o"),
+            model=OpenAIChat(id="gpt-4.1"),
             instructions=instructions,
             db=PostgresDb(
                 db_url=settings.SYNC_DATABASE_URL,
