@@ -14,6 +14,7 @@ from agno.db.postgres import PostgresDb
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories.user_repository import UserRepository
 from app.repositories.financial_profile_repository import FinancialProfileRepository
+from app.tools.sync_tools import _get_sync_session, _get_user_store
 from app.core.config import settings
 from app.core.prompts import (
     AGENT_PROMPT_V2,
@@ -47,6 +48,92 @@ class AgnoAgentService:
 
         logger.info("AgnoAgentService initialized with tool-based architecture (PostgreSQL storage)")
 
+    def _build_profile_context(self, username: str) -> str:
+        """
+        Build a summary of the user's existing profile data for agent context.
+
+        This allows the agent to reference previous data without needing to call tools first.
+        """
+        try:
+            session = _get_sync_session(settings.SYNC_DATABASE_URL)
+            try:
+                store = _get_user_store(session, username)
+            finally:
+                session.close()
+
+            parts = []
+
+            # Goals
+            if store.get("user_goal"):
+                parts.append(f"Primary goal: {store['user_goal']} (classified as {store.get('goal_classification', 'unknown')})")
+            if store.get("stated_goals"):
+                parts.append(f"Other goals mentioned: {', '.join(store['stated_goals'])}")
+
+            # Financial situation
+            if store.get("age"):
+                parts.append(f"Age: {store['age']}")
+            if store.get("monthly_income"):
+                parts.append(f"Monthly income: ${store['monthly_income']:,.0f}")
+            if store.get("monthly_expenses"):
+                parts.append(f"Monthly expenses: ${store['monthly_expenses']:,.0f}")
+            if store.get("savings"):
+                parts.append(f"Savings: ${store['savings']:,.0f}")
+            if store.get("emergency_fund"):
+                parts.append(f"Emergency fund: ${store['emergency_fund']:,.0f}")
+
+            # Debts/Liabilities
+            debts = store.get("debts", [])
+            if debts:
+                debt_items = []
+                for d in debts:
+                    if d.get("type") and d.get("type") != "none":
+                        debt_str = f"{d['type']}"
+                        if d.get("amount"):
+                            debt_str += f": ${d['amount']:,.0f}"
+                        if d.get("interest_rate"):
+                            debt_str += f" at {d['interest_rate']}%"
+                        if d.get("tenure_months"):
+                            years = d['tenure_months'] / 12
+                            debt_str += f" ({years:.1f} years remaining)"
+                        debt_items.append(debt_str)
+                if debt_items:
+                    parts.append(f"Debts: {'; '.join(debt_items)}")
+
+            # Investments
+            investments = store.get("investments", [])
+            if investments:
+                inv_items = []
+                for inv in investments:
+                    if inv.get("type") and inv.get("type") != "none":
+                        inv_str = f"{inv['type']}"
+                        if inv.get("value"):
+                            inv_str += f": ${inv['value']:,.0f}"
+                        inv_items.append(inv_str)
+                if inv_items:
+                    parts.append(f"Investments: {'; '.join(inv_items)}")
+
+            # Superannuation
+            super_data = store.get("superannuation", {})
+            if super_data and super_data.get("balance"):
+                parts.append(f"Superannuation: ${super_data['balance']:,.0f}")
+
+            # Other info
+            if store.get("marital_status"):
+                parts.append(f"Marital status: {store['marital_status']}")
+            if store.get("dependents"):
+                parts.append(f"Dependents: {store['dependents']}")
+            if store.get("job_stability"):
+                parts.append(f"Job stability: {store['job_stability']}")
+
+            if not parts:
+                return ""
+
+            return "\n\n## User's Current Financial Profile:\n" + "\n".join(f"- {p}" for p in parts)
+
+        except Exception as e:
+            logger.warning(f"[PROFILE_CONTEXT] Error building profile context: {e}")
+            return ""
+
     def _create_session_tools(self, session_id: str) -> list[Callable]:
         """
         Create session-bound tool functions for the agent.
@@ -62,6 +149,7 @@ class AgnoAgentService:
             sync_determine_required_info,
             sync_calculate_risk_profile,
             sync_generate_visualization,
+            sync_confirm_loan_data,
         )
 
         # Get sync database URL from settings
@@ -165,22 +253,58 @@ class AgnoAgentService:
             Args:
                 viz_type: Type of visualization
                     - "profile_snapshot": Balance sheet, asset mix, cashflow overview
-                    - "loan_amortization": Loan repayment trajectory (needs: principal, annual_rate_percent, term_years)
-                    - "goal_projection": Savings/expense projection over time (needs: label, monthly_amount, years)
-                params: Type-specific parameters (optional for profile_snapshot)
+                    - "loan_amortization": Loan repayment trajectory with interest breakdown
+                      Needs: principal, annual_rate_percent, term_years
+                      Use when: User wants to see how loan balance decreases over time, or interest vs principal split
+                    - "goal_projection": Cumulative payment/savings projection over time
+                      Needs: label, monthly_amount, years
+                      Use when: User gives EMI + tenure and wants total payment, OR savings projection
+
+                params: Type-specific parameters
+                    For loan_amortization:
+                    - principal: Loan amount (the original loan value)
+                    - annual_rate_percent: Interest rate (e.g., 6.5)
+                    - term_years: Loan term in years
+                    - extra_payment: (optional) Additional payment per month
+
+                    For goal_projection:
+                    - label: Description (e.g., "Personal Loan Payments", "Emergency Fund")
+                    - monthly_amount: Amount per month (EMI or savings)
+                    - years: Duration in years (tenure_months / 12)
+
+            CHOOSING THE RIGHT VIZ TYPE:
+            - User says "2k EMI for 36 months, show total" → goal_projection (label="Personal Loan", monthly_amount=2000, years=3)
+            - User says "500k loan at 7% for 20 years" → loan_amortization (principal=500000, annual_rate_percent=7, term_years=20)
+            - User wants balance trajectory with interest → loan_amortization
+            - User wants simple EMI × months total → goal_projection
 
             Returns:
-                dict with:
-                - success: Whether visualization was generated
-                - visualizations: List of visualization data
-                - message: Status message
-
-            When to call:
-            - In Phase 3 (Analysis) to show the user their financial picture
-            - When explaining loan scenarios or projections
-            - When user asks to "see" or "visualize" their situation
+                dict with success, visualization, message
             """
             return sync_generate_visualization(viz_type, db_url, session_id, params)
+
+        def confirm_loan_data(loan_type: str, principal: float, annual_rate_percent: float, term_years: int) -> dict:
+            """
+            Saves confirmed loan data to user's profile.
+
+            Call this ONLY when user confirms the loan details are their actual loan,
+            not just a hypothetical scenario.
+
+            Args:
+                loan_type: Type of loan (e.g., "home_loan", "car_loan", "personal_loan")
+                principal: Loan amount
+                annual_rate_percent: Interest rate
+                term_years: Loan term in years
+
+            Returns:
+                dict with confirmation message
+
+            When to call:
+            - AFTER showing a loan visualization
+            - ONLY when user confirms "yes, this is my actual loan"
+            - Do NOT call for hypothetical "what if" scenarios
+            """
+            return sync_confirm_loan_data(loan_type, principal, annual_rate_percent, term_years, db_url, session_id)
 
         # Return tools with names matching prompt references
         return [
@@ -188,7 +312,8 @@ class AgnoAgentService:
             extract_financial_facts,
             determine_required_info,
             calculate_risk_profile,
-            generate_visualization
+            generate_visualization,
+            confirm_loan_data,
         ]
 
     async def get_agent_with_session(self, username: str, session: AsyncSession) -> Agent:
@@ -211,10 +336,11 @@ class AgnoAgentService:
         """
         logger.debug(f"[GET_AGENT_V2] Requested tool-based agent for user: {username}")
 
-        # Return cached agent if exists
+        # Always create fresh agent to ensure profile context is up-to-date
+        # Agent conversation history is still persisted in PostgreSQL
         if username in self._agents:
-            logger.debug(f"[GET_AGENT_V2] Returning CACHED agent for: {username}")
-            return self._agents[username]
+            logger.debug(f"[GET_AGENT_V2] Clearing cached agent to refresh profile context for: {username}")
+            del self._agents[username]
 
         # Get user info
         user_repo = UserRepository(session)
@@ -226,16 +352,36 @@ class AgnoAgentService:
         tools = self._create_session_tools(username)
         logger.debug(f"[GET_AGENT_V2] Created {len(tools)} tools: {[t.__name__ for t in tools]}")
 
-        # Build instructions with user name if available
+        # Build instructions with user context
         instructions = AGENT_PROMPT_V2
+
+        # Add user name
         if user_name:
-            instructions = f"{AGENT_PROMPT_V2}\n\nYou're speaking with {user_name}."
+            instructions += f"\n\nYou're speaking with {user_name}."
+
+        # Add existing profile context for returning users
+        profile_context = self._build_profile_context(username)
+        if profile_context:
+            instructions += profile_context
+            instructions += """
+
+## MANDATORY: CHECK PROFILE BEFORE EVERY QUESTION
+Look at the profile data above. DO NOT ask about any field that already has a value:
+- Savings/cash shows value → DON'T ask about savings/cash/emergency fund
+- Age shows value → DON'T ask about age
+- Debts shows entries → DON'T ask about debts
+- Monthly income shows value → DON'T ask about income
+- User JUST told you something → DON'T ask about it again
+
+Ask only about fields that are MISSING from the profile above.
+Use stored data for 'what if' scenarios (e.g., loan projections).
+Violating this rule frustrates users!"""
 
         # Create agent with PostgreSQL storage for scalability
         agent = Agent(
             id=f"finance-educator-{username}",
             name="Vecta - Financial Educator",
-            model=OpenAIChat(id="gpt-4o"),  # Use gpt-4o (gpt-4.1 doesn't exist)
+            model=OpenAIChat(id="gpt-4.1"),
             instructions=instructions,
             tools=tools,
             db=PostgresDb(
@@ -291,7 +437,7 @@ class AgnoAgentService:
         # Create agent with PostgreSQL storage (no tools)
         agent = Agent(
             name="Jamie (Financial Educator)",
-            model=OpenAIChat(id="gpt-4o"),
+            model=OpenAIChat(id="gpt-4.1"),
             instructions=instructions,
             db=PostgresDb(
                 db_url=settings.SYNC_DATABASE_URL,
