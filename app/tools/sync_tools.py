@@ -116,30 +116,62 @@ def _get_user_store(session: Session, email: str) -> dict:
                 "value": asset.value,
             })
 
-    super_balance = 0.0
-    super_voluntary = None
+    # Build superannuation dict from table - track all fields
+    super_balance = None
+    employer_rate = None
+    personal_rate = None
+    super_notes = None
+    
     for super_record in user.superannuation or []:
-        super_balance += super_record.balance or 0
-        if super_record.personal_contribution_rate:
-            super_voluntary = super_record.personal_contribution_rate
-        elif super_record.notes and "voluntary" in super_record.notes.lower():
-            super_voluntary = True
+        if super_record.balance:
+            super_balance = super_record.balance
+        if super_record.employer_contribution_rate:
+            employer_rate = super_record.employer_contribution_rate
+        if super_record.personal_contribution_rate is not None:  # Can be 0
+            personal_rate = super_record.personal_contribution_rate
+        if super_record.notes:
+            super_notes = super_record.notes
+            # Check if user said they don't know certain fields
+            if "User doesn't know:" in super_notes:
+                if "balance" in super_notes and super_balance is None:
+                    super_balance = "not_provided"
+                if "employer_contribution_rate" in super_notes and employer_rate is None:
+                    employer_rate = "not_provided"
+                if "personal_contribution_rate" in super_notes and personal_rate is None:
+                    personal_rate = "not_provided"
 
-    # Build superannuation dict with reference structure
+    # Build superannuation dict with all fields from table
     superannuation_data = {
-        "balance": super_balance if super_balance > 0 else None,
-        "employer_contribution": 11.5,  # Default Australian rate
-        "voluntary_contribution": super_voluntary
+        "balance": super_balance,
+        "employer_contribution_rate": employer_rate,
+        "personal_contribution_rate": personal_rate,
+        "notes": super_notes
     }
 
-    # Build insurance info
-    life_insurance = None
-    private_health_insurance = None
+    # Build insurance info - track all fields like superannuation
+    life_insurance_data = {
+        "provider": None,
+        "coverage_amount": None,
+        "monthly_premium": None,
+        "notes": None
+    }
+    health_insurance_data = {
+        "provider": None,
+        "coverage_amount": None,
+        "monthly_premium": None,
+        "notes": None
+    }
+    
     for ins in user.insurance or []:
         if ins.insurance_type == "life":
-            life_insurance = ins.coverage_amount if ins.coverage_amount else True
+            life_insurance_data["provider"] = ins.provider
+            life_insurance_data["coverage_amount"] = ins.coverage_amount
+            life_insurance_data["monthly_premium"] = ins.monthly_premium
+
         elif ins.insurance_type == "health":
-            private_health_insurance = ins.provider if ins.provider else True
+            health_insurance_data["provider"] = ins.provider
+            health_insurance_data["coverage_amount"] = ins.coverage_amount
+            health_insurance_data["monthly_premium"] = ins.monthly_premium
 
     # Check for HECS debt
     hecs_debt = None
@@ -165,15 +197,15 @@ def _get_user_store(session: Session, email: str) -> dict:
         "age": user.age,
         "monthly_income": user.monthly_income,
         "monthly_expenses": user.expenses,
-        "savings": user.savings or savings_total or None,
-        "emergency_fund": emergency_fund_total if emergency_fund_total > 0 else None,
+        "savings": user.savings,
+        "emergency_fund": user.emergency_fund,
         "debts": debts,
         "investments": investments,
         "marital_status": user.relationship_status,
         "dependents": user.dependents,
         "job_stability": user.job_stability,
-        "life_insurance": life_insurance,
-        "private_health_insurance": private_health_insurance,
+        "life_insurance": life_insurance_data,
+        "private_health_insurance": health_insurance_data,
         "superannuation": superannuation_data,
         "hecs_debt": hecs_debt,
 
@@ -212,12 +244,23 @@ def _get_empty_store() -> dict:
         "marital_status": None,
         "dependents": None,
         "job_stability": None,
-        "life_insurance": None,
-        "private_health_insurance": None,
+        "life_insurance": {
+            "provider": None,
+            "coverage_amount": None,
+            "monthly_premium": None,
+            "notes": None
+        },
+        "private_health_insurance": {
+            "provider": None,
+            "coverage_amount": None,
+            "monthly_premium": None,
+            "notes": None
+        },
         "superannuation": {
             "balance": None,
-            "employer_contribution": 11.5,  # Default Australian rate
-            "voluntary_contribution": None
+            "employer_contribution_rate": None,
+            "personal_contribution_rate": None,
+            "notes": None
         },
         "hecs_debt": None,
 
@@ -280,7 +323,7 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
             new_value = updates[source_key]
             setattr(user, target_key, new_value)
             logger.debug(f"[UPDATE_STORE] Set {target_key}: {old_value} → {new_value}")
-
+            print(f"[UPDATE_STORE] Set {target_key}: {old_value} → {new_value}")
     # Handle complex fields that go to related tables
 
     # Handle savings -> Asset table (for cash_balance calculation)
@@ -409,57 +452,104 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
 
     # Handle life_insurance -> Insurance table
     if "life_insurance" in updates and updates["life_insurance"]:
-        life_ins_value = updates["life_insurance"]
-        existing_life = session.execute(
-            select(Insurance).where(
-                Insurance.user_id == user.id,
-                Insurance.insurance_type == "life"
-            )
-        ).scalar_one_or_none()
+        life_ins_data = updates["life_insurance"]
+        if isinstance(life_ins_data, dict) and life_ins_data:
+            existing_life = session.execute(
+                select(Insurance).where(
+                    Insurance.user_id == user.id,
+                    Insurance.insurance_type == "life"
+                )
+            ).scalar_one_or_none()
 
-        # Determine coverage amount
-        coverage = None
-        if isinstance(life_ins_value, (int, float)):
-            coverage = life_ins_value
-        elif isinstance(life_ins_value, bool) and life_ins_value:
-            coverage = None  # Has insurance but amount unknown
-
-        if existing_life:
-            if coverage:
-                existing_life.coverage_amount = coverage
-        else:
-            new_life_ins = Insurance(
-                user_id=user.id,
-                insurance_type="life",
-                coverage_amount=coverage,
-            )
-            session.add(new_life_ins)
+            if existing_life:
+                not_provided_items = []
+                
+                if "provider" in life_ins_data:
+                    if life_ins_data["provider"] == "not_provided":
+                        not_provided_items.append("provider")
+                    elif life_ins_data["provider"] is not None:
+                        existing_life.provider = life_ins_data["provider"]
+                
+                if "coverage_amount" in life_ins_data:
+                    if life_ins_data["coverage_amount"] == "not_provided":
+                        not_provided_items.append("coverage_amount")
+                    elif life_ins_data["coverage_amount"] is not None:
+                        existing_life.coverage_amount = life_ins_data["coverage_amount"]
+                
+                if "monthly_premium" in life_ins_data:
+                    if life_ins_data["monthly_premium"] == "not_provided":
+                        not_provided_items.append("monthly_premium")
+                    elif life_ins_data["monthly_premium"] is not None:
+                        existing_life.monthly_premium = life_ins_data["monthly_premium"]
+                
+                # Track not_provided in notes (stored in life_insurance_data notes in store)
+                if not_provided_items:
+                    # We'll track this in the store's notes field, not in DB
+                    pass
+            else:
+                # Create new record only if at least one field is provided
+                has_data = any(
+                    life_ins_data.get(field) not in [None, "not_provided"]
+                    for field in ["provider", "coverage_amount", "monthly_premium"]
+                )
+                
+                if has_data:
+                    new_life_ins = Insurance(
+                        user_id=user.id,
+                        insurance_type="life",
+                        provider=life_ins_data.get("provider") if life_ins_data.get("provider") != "not_provided" else None,
+                        coverage_amount=life_ins_data.get("coverage_amount") if life_ins_data.get("coverage_amount") != "not_provided" else None,
+                        monthly_premium=life_ins_data.get("monthly_premium") if life_ins_data.get("monthly_premium") != "not_provided" else None,
+                    )
+                    session.add(new_life_ins)
 
     # Handle private_health_insurance -> Insurance table
     if "private_health_insurance" in updates and updates["private_health_insurance"]:
-        health_ins_value = updates["private_health_insurance"]
-        existing_health = session.execute(
-            select(Insurance).where(
-                Insurance.user_id == user.id,
-                Insurance.insurance_type == "health"
-            )
-        ).scalar_one_or_none()
+        health_ins_data = updates["private_health_insurance"]
+        if isinstance(health_ins_data, dict) and health_ins_data:
+            existing_health = session.execute(
+                select(Insurance).where(
+                    Insurance.user_id == user.id,
+                    Insurance.insurance_type == "health"
+                )
+            ).scalar_one_or_none()
 
-        # Provider field can store coverage level (basic/bronze/silver/gold)
-        provider_info = None
-        if isinstance(health_ins_value, str):
-            provider_info = health_ins_value  # e.g., "gold", "silver"
-
-        if existing_health:
-            if provider_info:
-                existing_health.provider = provider_info
-        else:
-            new_health_ins = Insurance(
-                user_id=user.id,
-                insurance_type="health",
-                provider=provider_info,
-            )
-            session.add(new_health_ins)
+            if existing_health:
+                not_provided_items = []
+                
+                if "provider" in health_ins_data:
+                    if health_ins_data["provider"] == "not_provided":
+                        not_provided_items.append("provider")
+                    elif health_ins_data["provider"] is not None:
+                        existing_health.provider = health_ins_data["provider"]
+                
+                if "coverage_amount" in health_ins_data:
+                    if health_ins_data["coverage_amount"] == "not_provided":
+                        not_provided_items.append("coverage_amount")
+                    elif health_ins_data["coverage_amount"] is not None:
+                        existing_health.coverage_amount = health_ins_data["coverage_amount"]
+                
+                if "monthly_premium" in health_ins_data:
+                    if health_ins_data["monthly_premium"] == "not_provided":
+                        not_provided_items.append("monthly_premium")
+                    elif health_ins_data["monthly_premium"] is not None:
+                        existing_health.monthly_premium = health_ins_data["monthly_premium"]
+            else:
+                # Create new record only if at least one field is provided
+                has_data = any(
+                    health_ins_data.get(field) not in [None, "not_provided"]
+                    for field in ["provider", "coverage_amount", "monthly_premium"]
+                )
+                
+                if has_data:
+                    new_health_ins = Insurance(
+                        user_id=user.id,
+                        insurance_type="health",
+                        provider=health_ins_data.get("provider") if health_ins_data.get("provider") != "not_provided" else None,
+                        coverage_amount=health_ins_data.get("coverage_amount") if health_ins_data.get("coverage_amount") != "not_provided" else None,
+                        monthly_premium=health_ins_data.get("monthly_premium") if health_ins_data.get("monthly_premium") != "not_provided" else None,
+                    )
+                    session.add(new_health_ins)
 
     # Handle superannuation -> Superannuation table
     if "superannuation" in updates and updates["superannuation"]:
@@ -470,32 +560,83 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
             ).scalar_one_or_none()
 
             if existing_super:
-                # Update existing
+                # Update existing - merge attributes, don't override
+                # Track what was asked but not provided in notes
+                not_provided_items = []
+                
                 if "balance" in super_data:
-                    existing_super.balance = super_data["balance"]
-                if "voluntary_contribution" in super_data:
-                    vol_contrib = super_data["voluntary_contribution"]
-                    if isinstance(vol_contrib, (int, float)):
-                        existing_super.personal_contribution_rate = vol_contrib
-                    elif vol_contrib is True:
-                        # Has voluntary contributions but rate unknown
-                        existing_super.notes = "Making voluntary contributions"
+                    if super_data["balance"] == "not_provided":
+                        not_provided_items.append("balance")
+                    elif super_data["balance"] is not None:
+                        existing_super.balance = super_data["balance"]
+                
+                if "employer_contribution_rate" in super_data:
+                    if super_data["employer_contribution_rate"] == "not_provided":
+                        not_provided_items.append("employer_contribution_rate")
+                    elif super_data["employer_contribution_rate"] is not None:
+                        existing_super.employer_contribution_rate = super_data["employer_contribution_rate"]
+                
+                if "personal_contribution_rate" in super_data:
+                    if super_data["personal_contribution_rate"] == "not_provided":
+                        not_provided_items.append("personal_contribution_rate")
+                    elif super_data["personal_contribution_rate"] is not None:
+                        existing_super.personal_contribution_rate = super_data["personal_contribution_rate"]
+                
+                # Update notes
+                if "notes" in super_data and super_data["notes"] not in [None, "not_provided"]:
+                    if existing_super.notes:
+                        existing_super.notes = f"{existing_super.notes}; {super_data['notes']}"
+                    else:
+                        existing_super.notes = super_data["notes"]
+                
+                # Add not_provided tracking to notes
+                if not_provided_items:
+                    not_provided_note = f"User doesn't know: {', '.join(not_provided_items)}"
+                    if existing_super.notes:
+                        # Check if already noted
+                        if "User doesn't know:" not in existing_super.notes:
+                            existing_super.notes = f"{existing_super.notes}; {not_provided_note}"
+                    else:
+                        existing_super.notes = not_provided_note
             else:
                 # Create new
-                balance = super_data.get("balance")
-                vol_contrib = super_data.get("voluntary_contribution")
+                not_provided_items = []
+                balance = None
+                employer_rate = None
                 personal_rate = None
                 notes = None
-
-                if isinstance(vol_contrib, (int, float)):
-                    personal_rate = vol_contrib
-                elif vol_contrib is True:
-                    notes = "Making voluntary contributions"
-
+                
+                if "balance" in super_data:
+                    if super_data["balance"] == "not_provided":
+                        not_provided_items.append("balance")
+                    else:
+                        balance = super_data["balance"]
+                
+                if "employer_contribution_rate" in super_data:
+                    if super_data["employer_contribution_rate"] == "not_provided":
+                        not_provided_items.append("employer_contribution_rate")
+                    else:
+                        employer_rate = super_data["employer_contribution_rate"]
+                
+                if "personal_contribution_rate" in super_data:
+                    if super_data["personal_contribution_rate"] == "not_provided":
+                        not_provided_items.append("personal_contribution_rate")
+                    else:
+                        personal_rate = super_data["personal_contribution_rate"]
+                
+                if "notes" in super_data and super_data["notes"] != "not_provided":
+                    notes = super_data["notes"]
+                
+                # Add not_provided tracking to notes
+                if not_provided_items:
+                    not_provided_note = f"User doesn't know: {', '.join(not_provided_items)}"
+                    notes = f"{notes}; {not_provided_note}" if notes else not_provided_note
+                
                 new_super = Superannuation(
                     user_id=user.id,
                     fund_name="Unknown",  # Required field
                     balance=balance,
+                    employer_contribution_rate=employer_rate,
                     personal_contribution_rate=personal_rate,
                     notes=notes,
                 )
@@ -538,7 +679,7 @@ Respond with JSON:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a financial goal classifier. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
@@ -671,27 +812,83 @@ User's response: "{user_message}"
 
 Extract any of these fields if mentioned:
 - age (integer)
+  * If user says "I don't know" or "not sure" → "not_provided"
 - monthly_income (integer in Australian dollars, convert annual to monthly by dividing by 12)
+  * If user says "I don't know" or "not sure" → "not_provided"
 - monthly_expenses (integer in Australian dollars)
+  * If user says "I don't know" or "not sure" → "not_provided"
 - savings (integer in Australian dollars - includes "cash", "cash savings", "bank balance", "money saved", "in the bank")
   * "10k in cash" → savings: 10000
   * "got 5k saved" → savings: 5000
   * "20k in my account" → savings: 20000
+  * If user says "no savings" or "don't have savings" → 0
+  * If user says "I don't know" or "not sure" → "not_provided"
 - emergency_fund (integer in Australian dollars - specifically labeled emergency fund or rainy day fund)
+  * If user says "no emergency fund" or "don't have an emergency fund" → 0
+  * If user says "3 months" → calculate: monthly_expenses * 3
+  * If user says "I don't know" or "not sure" → "not_provided"
 - debts (list of {{type, amount, interest_rate}})
+  * If user says "I don't know" or "not sure" → "not_provided"
 - investments (list of {{type, amount}})
+  * If user says "I don't know" or "not sure" → "not_provided"
 - marital_status (single/married/divorced)
+  * If user says "I don't know" or "not sure" or refuses → "not_provided"
 - dependents (integer: number of dependents)
+  * If user says "I don't know" or "not sure" → "not_provided"
 - job_stability (stable/casual/contract)
-- life_insurance (boolean or coverage amount in dollars)
-- private_health_insurance (boolean or coverage level: basic/bronze/silver/gold)
-- superannuation ({{balance: integer, voluntary_contribution: boolean or amount}})
-  * If user says "45k in super" → {{"balance": 45000}}
-  * If user says "making extra contributions" → {{"voluntary_contribution": true}} or amount if specified
-  * If user says "just the standard" or "no extra" → {{"voluntary_contribution": null}}
+  * If user says "I don't know" or "not sure" → "not_provided"
+- life_insurance (object with provider, coverage_amount, monthly_premium, notes)
+  * provider (string): Insurance company name
+    - If user says "I have life insurance with AMP" → {{"provider": "AMP"}}
+    - If user says "I don't know" → {{"provider": "not_provided"}}
+  * coverage_amount (integer): Coverage amount in dollars
+    - If user says "$500k coverage" → {{"coverage_amount": 500000}}
+    - If user says "I don't know" → {{"coverage_amount": "not_provided"}}
+  * monthly_premium (integer): Monthly premium cost
+    - If user says "$50 per month" → {{"monthly_premium": 50}}
+    - If user says "I don't know" → {{"monthly_premium": "not_provided"}}
+  * notes (string): Additional context
+    - If user says "I have life insurance but don't know the details" → {{"notes": "Has life insurance but doesn't know details"}}
+  * IMPORTANT: If user says "No, I don't have life insurance" → DO NOT extract this field at all
+  * IMPORTANT: Extract only the fields mentioned. If only provider mentioned, only return provider field.
+- private_health_insurance (object with provider, coverage_amount, monthly_premium, notes)
+  * provider (string): Insurance company or coverage level (basic/bronze/silver/gold)
+    - If user says "I have Bupa gold cover" → {{"provider": "Bupa gold"}}
+    - If user says "I don't know" → {{"provider": "not_provided"}}
+  * coverage_amount (integer): Annual coverage limit if mentioned
+    - If user says "$100k annual limit" → {{"coverage_amount": 100000}}
+    - If user says "I don't know" → {{"coverage_amount": "not_provided"}}
+  * monthly_premium (integer): Monthly premium cost
+    - If user says "$200 per month" → {{"monthly_premium": 200}}
+    - If user says "I don't know" → {{"monthly_premium": "not_provided"}}
+  * notes (string): Additional context
+    - If user says "I have private health but can't remember the provider" → {{"notes": "Has private health but doesn't know provider"}}
+  * IMPORTANT: If user says "No, I don't have private health insurance" → DO NOT extract this field at all
+  * IMPORTANT: Extract only the fields mentioned. If only provider mentioned, only return provider field.
+- superannuation (object with balance, employer_contribution_rate, personal_contribution_rate, notes)
+  * balance (integer): Current super balance in dollars
+    - If user says "45k in super" → {{"balance": 45000}}
+    - If user says "I don't know" → {{"balance": "not_provided"}}
+  * employer_contribution_rate (float): Employer contribution percentage (reference: 12% is standard in Australia)
+    - If user says "standard rate" or "12%" → {{"employer_contribution_rate": 12.0}}
+    - If user says "I don't know" → {{"employer_contribution_rate": "not_provided"}}
+  * personal_contribution_rate (float): Personal/voluntary contribution percentage
+    - If user says "5% extra" → {{"personal_contribution_rate": 5.0}}
+    - If user says "no extra" or "just employer" → {{"personal_contribution_rate": 0}}
+    - If user says "I don't know" → {{"personal_contribution_rate": "not_provided"}}
+  * notes (string): Additional context about super
+    - If user provides partial info like "I know my employer contributes but can't remember the rate" → {{"notes": "User knows employer contributes but can't recall exact rate"}}
+    - If user mentions fund name or other details → capture in notes
+  * IMPORTANT: Extract all fields mentioned. If only balance mentioned, only return balance field.
 - hecs_debt (integer: HECS/HELP student loan debt)
-- timeline (string: when they want to achieve goal)
+  * If user says "I don't know" or "not sure" → "not_provided"
+- timeline (string: MUST BE A SIMPLE STRING, NEVER a dictionary or object)
+  * If single goal: "5 years", "10 years", "next year", "2030"
+  * If multiple goals with different timelines: combine with commas like "house in 10 years, car in 2 years, retirement in 20 years"
+  * If user says "I don't know" or "not sure" → "not_provided"
+  * Examples: "5 years", "house in 10 years, car in 2 years", "retirement in 20 years"
 - target_amount (integer: target amount for goal if mentioned)
+  * If user says "I don't know" or "not sure" → "not_provided"
 - user_goals (list of strings: ANY goals the user mentions - buying house, car, vacation, retirement, etc.)
   * Extract EVERY goal mentioned, no matter how small
   * Examples: "buy a house", "get a new car", "go on vacation", "retire early", "pay off debt"
@@ -707,13 +904,17 @@ IMPORTANT:
 - Only extract facts explicitly mentioned or clearly implied
 - If user explicitly says "no debts", return debts: [{{"type": "none", "amount": 0, "interest_rate": 0}}]
 - If user explicitly says "no investments", return investments: [{{"type": "none", "amount": 0}}]
+- If user explicitly says "no emergency fund" or "don't have an emergency fund", return emergency_fund: 0
+- If user explicitly says "no savings", return savings: 0
+- If user says "I don't know" or "not sure" or refuses to answer, set that field to "not_provided"
+- CRITICAL: timeline MUST ALWAYS be a simple string, NEVER a dictionary or object
 - If nothing new is mentioned, return empty object
 
 Return only extracted fields as JSON.
 If nothing to extract, return: {{}}"""
 
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a financial data extractor. Always respond with valid JSON only. No markdown, no explanation."},
                 {"role": "user", "content": prompt}
@@ -821,7 +1022,7 @@ Respond with JSON: {{"is_response_to_probe": true/false, "confirmed": true/false
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are an intent analyzer. Always respond with valid JSON."},
                 {"role": "user", "content": prompt}
@@ -849,9 +1050,10 @@ BASELINE_FIELDS = ["age", "monthly_income", "monthly_expenses", "emergency_fund"
 GOAL_SPECIFIC_FIELDS = {
     "small_purchase": ["savings", "timeline"],
     "medium_purchase": ["savings", "timeline", "job_stability"],
-    "large_purchase": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance"],
-    "luxury": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance", "investments"],
-    "life_event": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance"],
+    "large_purchase": ["savings", "timeline", "job_stability", "marital_status", "dependents"],
+    "luxury": ["savings", "timeline", "job_stability", "marital_status", "dependents", "investments"],
+    # "life_event": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance"],
+    "life_event": ["savings", "timeline", "job_stability", "marital_status", "dependents"],
     "investment": ["savings", "investments", "superannuation", "timeline"],
     "emergency": ["job_stability", "marital_status", "dependents", "superannuation"]
 }
@@ -882,7 +1084,33 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
         for field in required_fields:
             value = current_store.get(field)
             if value is not None:
-                if isinstance(value, dict) and any(v is not None for v in value.values()):
+                # Special handling for superannuation - needs balance, employer_rate, AND personal_rate
+                if field == "superannuation":
+                    if isinstance(value, dict):
+                        has_balance = value.get("balance") is not None and value.get("balance") != "not_provided"
+                        has_employer = value.get("employer_contribution_rate") is not None and value.get("employer_contribution_rate") != "not_provided"
+                        has_personal = value.get("personal_contribution_rate") is not None and value.get("personal_contribution_rate") != "not_provided"
+                        if has_balance and has_employer and has_personal:
+                            populated_fields.append(field)
+                # Special handling for life_insurance - just needs a record to exist (any field populated)
+                elif field == "life_insurance":
+                    if isinstance(value, dict):
+                        has_any_data = any(
+                            value.get(f) is not None and value.get(f) != "not_provided"
+                            for f in ["provider", "coverage_amount", "monthly_premium"]
+                        )
+                        if has_any_data:
+                            populated_fields.append(field)
+                # Special handling for private_health_insurance - just needs a record to exist (any field populated)
+                elif field == "private_health_insurance":
+                    if isinstance(value, dict):
+                        has_any_data = any(
+                            value.get(f) is not None and value.get(f) != "not_provided"
+                            for f in ["provider", "coverage_amount", "monthly_premium"]
+                        )
+                        if has_any_data:
+                            populated_fields.append(field)
+                elif isinstance(value, dict) and any(v is not None for v in value.values()):
                     populated_fields.append(field)
                 elif isinstance(value, list) and len(value) > 0:
                     populated_fields.append(field)
@@ -942,7 +1170,7 @@ Respond with JSON:
 }}"""
 
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a financial risk assessor. Always respond with valid JSON."},
                 {"role": "user", "content": prompt}

@@ -178,7 +178,7 @@ class AgnoAgentService:
             """
             return sync_classify_goal(user_goal, db_url, session_id)
 
-        def extract_financial_facts(user_message: str, agent_last_question: str = "") -> dict:
+        def extract_financial_facts(user_message: str, agent_last_question: str) -> dict:
             """
             Extracts financial facts from user's message using LLM.
 
