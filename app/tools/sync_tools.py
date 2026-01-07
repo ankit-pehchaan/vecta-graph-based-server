@@ -309,7 +309,7 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         "monthly_income": "monthly_income",
         "monthly_expenses": "expenses",
         "savings": "savings",
-        # emergency_fund moved to Asset table - handled separately below
+        "emergency_fund": "emergency_fund",  # Also saved to Asset table below
         "marital_status": "relationship_status",
         "dependents": "dependents",
         "job_stability": "job_stability",
@@ -327,7 +327,8 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
     # Handle complex fields that go to related tables
 
     # Handle savings -> Asset table (for cash_balance calculation)
-    if "savings" in updates and updates["savings"]:
+    # Use 'is not None' to handle 0 values (user explicitly said "no savings")
+    if "savings" in updates and updates["savings"] is not None:
         savings_value = updates["savings"]
         existing_savings = session.execute(
             select(Asset).where(
@@ -350,7 +351,8 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
             logger.debug(f"[UPDATE_STORE] Created savings Asset: {savings_value}")
 
     # Handle emergency_fund -> Asset table (normalized storage)
-    if "emergency_fund" in updates and updates["emergency_fund"]:
+    # Use 'is not None' to handle 0 values (user explicitly said "no emergency fund")
+    if "emergency_fund" in updates and updates["emergency_fund"] is not None:
         emergency_fund_value = updates["emergency_fund"]
         existing_ef = session.execute(
             select(Asset).where(
