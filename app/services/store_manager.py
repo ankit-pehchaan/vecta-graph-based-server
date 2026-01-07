@@ -159,7 +159,7 @@ class StoreManager:
             "monthly_income": user.monthly_income,
             "monthly_expenses": user.expenses,
             "savings": user.savings if user.savings else (savings_total if savings_total > 0 else None),
-            "emergency_fund": user.emergency_fund if user.emergency_fund else (emergency_fund_total if emergency_fund_total > 0 else None),
+            "emergency_fund": emergency_fund_total if emergency_fund_total > 0 else None,
             "debts": debts,
             "investments": investments,
             "marital_status": marital_status,
@@ -209,7 +209,7 @@ class StoreManager:
             "monthly_income": "monthly_income",
             "monthly_expenses": "expenses",
             "savings": "savings",
-            "emergency_fund": "emergency_fund",
+            # emergency_fund moved to Asset table - handled separately below
             "marital_status": "relationship_status",
             "dependents": "dependents",
             "job_stability": "job_stability",
@@ -220,6 +220,47 @@ class StoreManager:
         for source_key, target_key in field_mapping.items():
             if source_key in updates:
                 setattr(user, target_key, updates[source_key])
+
+        # Handle savings -> Asset table (for cash_balance calculation)
+        if "savings" in updates and updates["savings"]:
+            savings_value = updates["savings"]
+            existing_savings = None
+            for asset in user.assets or []:
+                if asset.asset_type == "savings":
+                    existing_savings = asset
+                    break
+
+            if existing_savings:
+                existing_savings.value = savings_value
+            else:
+                new_savings_asset = Asset(
+                    user_id=user.id,
+                    asset_type="savings",
+                    description="Cash Savings",
+                    value=savings_value,
+                )
+                self._session.add(new_savings_asset)
+
+        # Handle emergency_fund -> Asset table (normalized storage)
+        if "emergency_fund" in updates and updates["emergency_fund"]:
+            emergency_fund_value = updates["emergency_fund"]
+            # Check if emergency_fund asset already exists
+            existing_ef = None
+            for asset in user.assets or []:
+                if asset.asset_type == "emergency_fund":
+                    existing_ef = asset
+                    break
+
+            if existing_ef:
+                existing_ef.value = emergency_fund_value
+            else:
+                new_ef_asset = Asset(
+                    user_id=user.id,
+                    asset_type="emergency_fund",
+                    description="Emergency Fund",
+                    value=emergency_fund_value,
+                )
+                self._session.add(new_ef_asset)
 
         # Handle superannuation updates specially
         if "superannuation" in updates and isinstance(updates["superannuation"], dict):
