@@ -1365,20 +1365,46 @@ def _build_loan_amortization_viz(params: Optional[dict]) -> dict:
     if not params:
         return {
             "success": False,
-            "message": "Need loan details: principal amount, interest rate, and loan term. Please share your loan information first."
+            "missing_data": ["principal", "annual_rate_percent", "term_years"],
+            "message": "Missing: principal amount, interest rate, and loan term. Ask the user for these details."
         }
 
     principal = params.get("principal", 0)
-    annual_rate = params.get("annual_rate_percent", 6.0)
-    term_years = params.get("term_years", 30)
+    annual_rate = params.get("annual_rate_percent")
+    term_years = params.get("term_years")
     frequency = params.get("payment_frequency", "monthly")
     extra_payment = params.get("extra_payment", 0)
 
+    # Check what's missing and provide specific feedback
+    missing = []
+    has_data = []
     if principal <= 0:
+        missing.append("principal (loan amount)")
+    else:
+        has_data.append(f"principal: ${principal:,.0f}")
+    if annual_rate is None:
+        missing.append("interest rate")
+    else:
+        has_data.append(f"rate: {annual_rate}%")
+    if term_years is None:
+        missing.append("loan term (years)")
+    else:
+        has_data.append(f"term: {term_years} years")
+
+    if missing:
+        has_str = f" I have: {', '.join(has_data)}." if has_data else ""
         return {
             "success": False,
-            "message": "I don't have your loan amount stored yet. Could you tell me the principal amount, interest rate, and term of your home loan?"
+            "missing_data": missing,
+            "has_data": has_data,
+            "message": f"Missing: {', '.join(missing)}.{has_str} Ask the user for the missing details to show the visualization."
         }
+
+    # Set defaults if not provided
+    if annual_rate is None:
+        annual_rate = 6.0
+    if term_years is None:
+        term_years = 30
 
     # Compute amortization trajectory
     trajectory, summary = amortize_balance_trajectory(
@@ -1545,16 +1571,39 @@ def _build_goal_projection_viz(params: Optional[dict]) -> dict:
     if not params:
         return {
             "success": False,
-            "message": "Need params: label, monthly_amount, years"
+            "missing_data": ["monthly_amount", "years"],
+            "message": "Missing: monthly amount and duration. Ask user: 'How much per month and for how many months/years?'"
         }
 
     label = params.get("label", "Savings")
     monthly_amount = params.get("monthly_amount", 0)
-    years = params.get("years", 5)
+    years = params.get("years")
     annual_increase = params.get("annual_increase_percent", 0)
 
+    # Check what's missing
+    missing = []
+    has_data = []
     if monthly_amount <= 0:
-        return {"success": False, "message": "Monthly amount must be greater than 0"}
+        missing.append("monthly amount (EMI or savings)")
+    else:
+        has_data.append(f"${monthly_amount:,.0f}/month")
+    if years is None or years <= 0:
+        missing.append("duration (months or years)")
+    else:
+        has_data.append(f"{years} years")
+
+    if missing:
+        has_str = f" I have: {', '.join(has_data)}." if has_data else ""
+        return {
+            "success": False,
+            "missing_data": missing,
+            "has_data": has_data,
+            "message": f"Missing: {', '.join(missing)}.{has_str} Ask the user for the missing details."
+        }
+
+    # Default years if somehow still None
+    if years is None:
+        years = 5
 
     # Determine if this is for loan payments or savings
     is_loan = any(word in label.lower() for word in ["loan", "emi", "payment", "repayment"])

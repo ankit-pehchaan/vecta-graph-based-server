@@ -128,7 +128,31 @@ class AgnoAgentService:
             if not parts:
                 return ""
 
-            return "\n\n## User's Current Financial Profile:\n" + "\n".join(f"- {p}" for p in parts)
+            # Build visualization hints based on available data
+            viz_hints = []
+            debts = store.get("debts", [])
+            for d in debts:
+                if d.get("type") and d.get("type") != "none":
+                    debt_type = d.get("type", "").lower()
+                    if debt_type in ["home_loan", "mortgage", "housing_loan"]:
+                        if d.get("amount") and d.get("interest_rate"):
+                            viz_hints.append(f"loan_amortization (home loan: ${d['amount']:,.0f} at {d['interest_rate']}%)")
+                    elif d.get("monthly_payment") or d.get("tenure_months"):
+                        emi = d.get("monthly_payment", 0)
+                        months = d.get("tenure_months", 0)
+                        if emi and months:
+                            viz_hints.append(f"goal_projection for {debt_type} (EMI: ${emi:,.0f}/month, {months} months)")
+
+            if store.get("monthly_income") or store.get("monthly_expenses") or store.get("savings"):
+                viz_hints.append("profile_snapshot (has income/expenses/savings)")
+
+            profile_section = "\n\n## User's Current Financial Profile:\n" + "\n".join(f"- {p}" for p in parts)
+
+            if viz_hints:
+                profile_section += "\n\n## Available Visualizations (use when user asks to 'show' or 'visualize'):\n"
+                profile_section += "\n".join(f"- {v}" for v in viz_hints)
+
+            return profile_section
 
         except Exception as e:
             logger.warning(f"[PROFILE_CONTEXT] Error building profile context: {e}")
