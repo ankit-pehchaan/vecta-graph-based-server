@@ -7,16 +7,59 @@ to avoid asyncio event loop conflicts when Agno runs tools in threads.
 import json
 import logging
 from typing import Optional
+from uuid import uuid4
 from openai import OpenAI
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session, sessionmaker, selectinload
 from app.models.user import User
 from app.models.financial import Asset, Liability, Insurance, Superannuation, Goal
 from app.tools.goal_discoverer import should_probe_for_goal
+from app.services.finance_calculators import amortize_balance_trajectory, FREQUENCY_PER_YEAR, pmt
 
 # Configure logger (set to WARNING to disable verbose debug logs)
 logger = logging.getLogger("sync_tools")
 logger.setLevel(logging.WARNING)
+
+# Thread-safe storage for pending visualizations to pass from tool → response handler
+# Key: session_id, Value: list of visualization dicts
+_pending_visualizations: dict[str, list[dict]] = {}
+
+# Temporary storage for hypothetical/unconfirmed data (not saved to profile yet)
+# Key: session_id, Value: dict of temporary data
+_temporary_data: dict[str, dict] = {}
+
+
+def get_pending_visualizations(session_id: str) -> list[dict]:
+    """Get and clear any pending visualizations for a session."""
+    visualizations = _pending_visualizations.pop(session_id, [])
+    return visualizations
+
+
+def _store_pending_visualization(session_id: str, viz_data: dict) -> None:
+    """Store a visualization to be sent after agent response."""
+    if session_id not in _pending_visualizations:
+        _pending_visualizations[session_id] = []
+    _pending_visualizations[session_id].append(viz_data)
+
+
+def get_temporary_data(session_id: str) -> dict:
+    """Get temporary/hypothetical data for a session."""
+    return _temporary_data.get(session_id, {})
+
+
+def set_temporary_data(session_id: str, key: str, value: dict) -> None:
+    """Store temporary data (e.g., hypothetical loan) for later confirmation."""
+    if session_id not in _temporary_data:
+        _temporary_data[session_id] = {}
+    _temporary_data[session_id][key] = value
+
+
+def clear_temporary_data(session_id: str, key: str = None) -> None:
+    """Clear temporary data after confirmation or rejection."""
+    if key and session_id in _temporary_data:
+        _temporary_data[session_id].pop(key, None)
+    elif session_id in _temporary_data:
+        del _temporary_data[session_id]
 
 
 def _get_sync_session(db_url: str) -> Session:
@@ -55,6 +98,8 @@ def _get_user_store(session: Session, email: str) -> dict:
             "type": liability.liability_type,
             "amount": liability.amount,
             "interest_rate": liability.interest_rate,
+            "tenure_months": liability.tenure_months,
+            "monthly_payment": liability.monthly_payment,
         })
 
     investments = []
@@ -264,7 +309,7 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         "monthly_income": "monthly_income",
         "monthly_expenses": "expenses",
         "savings": "savings",
-        "emergency_fund": "emergency_fund",
+        # emergency_fund moved to Asset table - handled separately below
         "marital_status": "relationship_status",
         "dependents": "dependents",
         "job_stability": "job_stability",
@@ -280,6 +325,54 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
             logger.debug(f"[UPDATE_STORE] Set {target_key}: {old_value} → {new_value}")
             print(f"[UPDATE_STORE] Set {target_key}: {old_value} → {new_value}")
     # Handle complex fields that go to related tables
+
+    # Handle savings -> Asset table (for cash_balance calculation)
+    if "savings" in updates and updates["savings"]:
+        savings_value = updates["savings"]
+        existing_savings = session.execute(
+            select(Asset).where(
+                Asset.user_id == user.id,
+                Asset.asset_type == "savings"
+            )
+        ).scalar_one_or_none()
+
+        if existing_savings:
+            existing_savings.value = savings_value
+            logger.debug(f"[UPDATE_STORE] Updated savings Asset: {savings_value}")
+        else:
+            new_savings_asset = Asset(
+                user_id=user.id,
+                asset_type="savings",
+                description="Cash Savings",
+                value=savings_value,
+            )
+            session.add(new_savings_asset)
+            logger.debug(f"[UPDATE_STORE] Created savings Asset: {savings_value}")
+
+    # Handle emergency_fund -> Asset table (normalized storage)
+    if "emergency_fund" in updates and updates["emergency_fund"]:
+        emergency_fund_value = updates["emergency_fund"]
+        existing_ef = session.execute(
+            select(Asset).where(
+                Asset.user_id == user.id,
+                Asset.asset_type == "emergency_fund"
+            )
+        ).scalar_one_or_none()
+
+        if existing_ef:
+            # Update existing emergency fund asset
+            existing_ef.value = emergency_fund_value
+            logger.debug(f"[UPDATE_STORE] Updated emergency_fund Asset: {emergency_fund_value}")
+        else:
+            # Create new emergency fund asset
+            new_ef_asset = Asset(
+                user_id=user.id,
+                asset_type="emergency_fund",
+                description="Emergency Fund",
+                value=emergency_fund_value,
+            )
+            session.add(new_ef_asset)
+            logger.debug(f"[UPDATE_STORE] Created emergency_fund Asset: {emergency_fund_value}")
 
     # Handle debts -> Liability table
     if "debts" in updates and updates["debts"]:
@@ -724,10 +817,13 @@ Extract any of these fields if mentioned:
   * If user says "I don't know" or "not sure" → "not_provided"
 - monthly_expenses (integer in Australian dollars)
   * If user says "I don't know" or "not sure" → "not_provided"
-- savings (integer in Australian dollars)
+- savings (integer in Australian dollars - includes "cash", "cash savings", "bank balance", "money saved", "in the bank")
+  * "10k in cash" → savings: 10000
+  * "got 5k saved" → savings: 5000
+  * "20k in my account" → savings: 20000
   * If user says "no savings" or "don't have savings" → 0
   * If user says "I don't know" or "not sure" → "not_provided"
-- emergency_fund (integer in Australian dollars)
+- emergency_fund (integer in Australian dollars - specifically labeled emergency fund or rainy day fund)
   * If user says "no emergency fund" or "don't have an emergency fund" → 0
   * If user says "3 months" → calculate: monthly_expenses * 3
   * If user says "I don't know" or "not sure" → "not_provided"
@@ -890,11 +986,19 @@ If nothing to extract, return: {{}}"""
                     _update_user_store(session, session_id, {"pending_probe": probe_check})
                     break
 
+        # Build message that explicitly tells agent not to re-ask about extracted fields
+        if extracted_facts:
+            fields_list = ', '.join(extracted_facts.keys())
+            message = f"Extracted and saved: {fields_list}. These fields are now in the profile - DO NOT ask about them again. Move to the next missing field."
+        else:
+            message = "No new info extracted."
+
         return {
             "extracted_facts": extracted_facts,
             "stated_goals_added": user_goals,
             "probing_suggestions": probing_suggestions,
-            "message": f"Extracted: {', '.join(extracted_facts.keys())}" if extracted_facts else "No new info"
+            "do_not_ask": list(extracted_facts.keys()) if extracted_facts else [],
+            "message": message
         }
 
     except Exception as e:
@@ -1100,7 +1204,76 @@ Respond with JSON:
 
 
 # =============================================================================
-# VISUALIZATION (Sync)
+# CONFIRM LOAN DATA (Sync) - Save confirmed loan to profile
+# =============================================================================
+
+def sync_confirm_loan_data(
+    loan_type: str,
+    principal: float,
+    annual_rate_percent: float,
+    term_years: int,
+    db_url: str,
+    session_id: str
+) -> dict:
+    """
+    Save confirmed loan data to user's profile as a liability.
+
+    Only call this when user confirms the loan is real, not hypothetical.
+    """
+    session = _get_sync_session(db_url)
+
+    try:
+        user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+        if not user:
+            return {"success": False, "message": "User not found"}
+
+        # Check if this loan type already exists
+        existing = session.execute(
+            select(Liability).where(
+                Liability.user_id == user.id,
+                Liability.liability_type == loan_type
+            )
+        ).scalar_one_or_none()
+
+        tenure_months = int(term_years * 12)
+
+        if existing:
+            # Update existing loan
+            existing.amount = principal
+            existing.interest_rate = annual_rate_percent
+            existing.tenure_months = tenure_months
+            session.commit()
+            return {
+                "success": True,
+                "message": f"Updated your {loan_type.replace('_', ' ')} details: ${principal:,.0f} at {annual_rate_percent}% for {term_years} years.",
+                "action": "updated"
+            }
+        else:
+            # Create new loan liability
+            new_loan = Liability(
+                user_id=user.id,
+                liability_type=loan_type,
+                description=f"{loan_type.replace('_', ' ').title()}",
+                amount=principal,
+                interest_rate=annual_rate_percent,
+                tenure_months=tenure_months,
+            )
+            session.add(new_loan)
+            session.commit()
+            return {
+                "success": True,
+                "message": f"Saved your {loan_type.replace('_', ' ')} to profile: ${principal:,.0f} at {annual_rate_percent}% for {term_years} years.",
+                "action": "created"
+            }
+
+    except Exception as e:
+        return {"success": False, "message": f"Error saving loan: {str(e)}"}
+    finally:
+        session.close()
+
+
+# =============================================================================
+# VISUALIZATION (Sync) - Computes actual chart data
 # =============================================================================
 
 def sync_generate_visualization(
@@ -1109,48 +1282,327 @@ def sync_generate_visualization(
     session_id: str,
     params: Optional[dict] = None
 ) -> dict:
-    """Generate visualization (sync version)."""
+    """
+    Generate visualization with actual computed chart data.
+
+    Returns visualization data that can be sent directly to frontend.
+    Also stores the visualization for the response handler to send inline.
+
+    For loan_amortization: If params are incomplete, tries to fill from user's stored liabilities.
+    """
     session = _get_sync_session(db_url)
 
     try:
         profile_data = _get_user_store(session, session_id)
 
         if viz_type == "profile_snapshot":
-            # Build basic profile snapshot info
-            return {
-                "success": True,
-                "viz_type": "profile_snapshot",
-                "data": {
-                    "income": profile_data.get("monthly_income"),
-                    "expenses": profile_data.get("monthly_expenses"),
-                    "savings": profile_data.get("savings"),
-                    "emergency_fund": profile_data.get("emergency_fund"),
-                    "debts": profile_data.get("debts", []),
-                },
-                "message": "Profile snapshot data prepared"
-            }
-
+            result = _build_profile_snapshot_viz(profile_data)
         elif viz_type == "loan_amortization":
-            if not params:
-                return {"success": False, "message": "Need params: principal, annual_rate_percent, term_years"}
-            return {
-                "success": True,
-                "viz_type": "loan_amortization",
-                "params": params,
-                "message": "Loan amortization parameters accepted"
-            }
-
+            # Auto-fill loan params from profile if not provided
+            enriched_params = _enrich_loan_params_from_profile(params or {}, profile_data)
+            result = _build_loan_amortization_viz(enriched_params)
         elif viz_type == "goal_projection":
-            if not params:
-                return {"success": False, "message": "Need params: label, monthly_amount, years"}
-            return {
-                "success": True,
-                "viz_type": "goal_projection",
-                "params": params,
-                "message": "Goal projection parameters accepted"
-            }
+            result = _build_goal_projection_viz(params)
+        else:
+            return {"success": False, "message": f"Unknown viz_type: {viz_type}"}
 
-        return {"success": False, "message": f"Unknown viz_type: {viz_type}"}
+        # Store visualization for inline delivery (if successful)
+        if result.get("success") and result.get("visualization"):
+            _store_pending_visualization(session_id, result["visualization"])
+
+        return result
 
     finally:
         session.close()
+
+
+def _enrich_loan_params_from_profile(params: dict, profile_data: dict) -> dict:
+    """
+    Fill in missing loan parameters from user's stored profile.
+
+    Looks for home_loan in debts/liabilities to get principal, rate, term.
+    User can override with explicit params (e.g., extra_payment for "what if" scenarios).
+    """
+    enriched = dict(params)  # Copy to avoid mutating original
+
+    # If we already have all required params, return as-is
+    if all(k in enriched for k in ["principal", "annual_rate_percent", "term_years"]):
+        return enriched
+
+    # Try to find home loan in profile
+    debts = profile_data.get("debts", [])
+    home_loan = None
+
+    for debt in debts:
+        debt_type = debt.get("type", "").lower()
+        if debt_type in ["home_loan", "mortgage", "housing_loan", "home loan"]:
+            home_loan = debt
+            break
+
+    if home_loan:
+        # Fill in missing params from stored loan
+        if "principal" not in enriched and home_loan.get("amount"):
+            enriched["principal"] = home_loan["amount"]
+        if "annual_rate_percent" not in enriched and home_loan.get("interest_rate"):
+            enriched["annual_rate_percent"] = home_loan["interest_rate"]
+        if "term_years" not in enriched and home_loan.get("tenure_months"):
+            enriched["term_years"] = home_loan["tenure_months"] / 12
+        elif "term_years" not in enriched and home_loan.get("term_years"):
+            enriched["term_years"] = home_loan["term_years"]
+
+    # Default term if still missing (common home loan term)
+    if "term_years" not in enriched:
+        enriched["term_years"] = 30
+
+    return enriched
+
+
+def _build_loan_amortization_viz(params: Optional[dict]) -> dict:
+    """Build loan amortization visualization with computed trajectory."""
+    if not params:
+        return {
+            "success": False,
+            "message": "Need loan details: principal amount, interest rate, and loan term. Please share your loan information first."
+        }
+
+    principal = params.get("principal", 0)
+    annual_rate = params.get("annual_rate_percent", 6.0)
+    term_years = params.get("term_years", 30)
+    frequency = params.get("payment_frequency", "monthly")
+    extra_payment = params.get("extra_payment", 0)
+
+    if principal <= 0:
+        return {
+            "success": False,
+            "message": "I don't have your loan amount stored yet. Could you tell me the principal amount, interest rate, and term of your home loan?"
+        }
+
+    # Compute amortization trajectory
+    trajectory, summary = amortize_balance_trajectory(
+        principal=principal,
+        annual_rate_percent=annual_rate,
+        term_years=term_years,
+        payment_frequency=frequency,
+        extra_payment=extra_payment or 0
+    )
+
+    # Downsample to yearly points for cleaner chart
+    periods_per_year = FREQUENCY_PER_YEAR.get(frequency, 12)
+    series_data = []
+
+    # Calculate actual payoff year
+    payoff_years = summary.payoff_periods / periods_per_year
+
+    for year in range(int(payoff_years) + 2):  # +2 to ensure we capture the endpoint
+        idx = min(year * periods_per_year, len(trajectory) - 1)
+        balance = trajectory[idx] if idx < len(trajectory) else 0
+        series_data.append({"x": year, "y": round(balance, 0)})
+        if balance <= 0:
+            break
+
+    # Calculate monthly payment for narrative
+    monthly_payment = summary.total_paid / summary.payoff_periods if summary.payoff_periods > 0 else 0
+
+    # Build subtitle based on whether extra payment is included
+    subtitle = f"${principal:,.0f} at {annual_rate}% over {term_years} years"
+    if extra_payment and extra_payment > 0:
+        subtitle += f" (extra ${extra_payment:,.0f}/{frequency})"
+
+    # Build narrative
+    narrative_parts = [f"Total interest: ${summary.total_interest:,.0f}"]
+    if frequency == "monthly":
+        narrative_parts.append(f"Monthly payment: ${monthly_payment:,.0f}")
+
+    if extra_payment and extra_payment > 0:
+        years_saved = term_years - (summary.payoff_periods / periods_per_year)
+        if years_saved > 0:
+            narrative_parts.append(f"Paid off {years_saved:.1f} years early")
+
+    return {
+        "success": True,
+        "visualization": {
+            "type": "visualization",
+            "spec_version": "1",
+            "viz_id": f"loan_{uuid4().hex[:8]}",
+            "title": "Loan Repayment Trajectory",
+            "subtitle": subtitle,
+            "chart": {
+                "kind": "line",
+                "x_label": "Years",
+                "y_label": "Remaining Balance",
+                "y_unit": "$"
+            },
+            "series": [{
+                "name": "Balance",
+                "data": series_data
+            }],
+            "narrative": ". ".join(narrative_parts),
+            "meta": {
+                "calc_kind": "loan_amortization",
+                "total_interest": round(summary.total_interest, 0),
+                "total_paid": round(summary.total_paid, 0),
+                "payoff_periods": summary.payoff_periods,
+                "monthly_payment": round(monthly_payment, 0)
+            }
+        },
+        "message": "Loan amortization visualization generated"
+    }
+
+
+def _build_profile_snapshot_viz(profile_data: dict) -> dict:
+    """Build profile snapshot visualization showing financial overview."""
+    income = profile_data.get("monthly_income")
+    expenses = profile_data.get("monthly_expenses")
+    savings = profile_data.get("savings")
+    emergency_fund = profile_data.get("emergency_fund")
+    debts = profile_data.get("debts", [])
+
+    # Calculate totals
+    total_debt = sum(d.get("amount", 0) for d in debts if d.get("type") != "none")
+    total_assets = (savings or 0) + (emergency_fund or 0)
+
+    # Build cashflow chart if we have income/expenses
+    if income or expenses:
+        cashflow_data = []
+        if income:
+            cashflow_data.append({"x": "Income", "y": income})
+        if expenses:
+            cashflow_data.append({"x": "Expenses", "y": expenses})
+        if income and expenses:
+            cashflow_data.append({"x": "Net", "y": income - expenses})
+
+        return {
+            "success": True,
+            "visualization": {
+                "type": "visualization",
+                "spec_version": "1",
+                "viz_id": f"profile_{uuid4().hex[:8]}",
+                "title": "Monthly Cashflow",
+                "subtitle": "Income vs Expenses",
+                "chart": {
+                    "kind": "bar",
+                    "x_label": "",
+                    "y_label": "Amount",
+                    "y_unit": "$"
+                },
+                "series": [{
+                    "name": "Cashflow",
+                    "data": cashflow_data
+                }],
+                "narrative": f"Net monthly: ${(income or 0) - (expenses or 0):,.0f}",
+                "meta": {"calc_kind": "profile_snapshot"}
+            },
+            "message": "Profile snapshot visualization generated"
+        }
+
+    # Fallback: show assets/debts if no cashflow data
+    if total_assets > 0 or total_debt > 0:
+        balance_data = []
+        if total_assets > 0:
+            balance_data.append({"x": "Assets", "y": total_assets})
+        if total_debt > 0:
+            balance_data.append({"x": "Debts", "y": total_debt})
+        balance_data.append({"x": "Net Worth", "y": total_assets - total_debt})
+
+        return {
+            "success": True,
+            "visualization": {
+                "type": "visualization",
+                "spec_version": "1",
+                "viz_id": f"profile_{uuid4().hex[:8]}",
+                "title": "Balance Sheet",
+                "subtitle": "Assets vs Debts",
+                "chart": {
+                    "kind": "bar",
+                    "x_label": "",
+                    "y_label": "Amount",
+                    "y_unit": "$"
+                },
+                "series": [{
+                    "name": "Balance",
+                    "data": balance_data
+                }],
+                "narrative": f"Net worth: ${total_assets - total_debt:,.0f}",
+                "meta": {"calc_kind": "profile_snapshot"}
+            },
+            "message": "Profile snapshot visualization generated"
+        }
+
+    return {
+        "success": False,
+        "message": "Insufficient data for profile snapshot. Need income, expenses, savings, or debt information."
+    }
+
+
+def _build_goal_projection_viz(params: Optional[dict]) -> dict:
+    """Build projection visualization showing cumulative payments/savings over time.
+
+    Works for both savings goals AND loan payment totals.
+    """
+    if not params:
+        return {
+            "success": False,
+            "message": "Need params: label, monthly_amount, years"
+        }
+
+    label = params.get("label", "Savings")
+    monthly_amount = params.get("monthly_amount", 0)
+    years = params.get("years", 5)
+    annual_increase = params.get("annual_increase_percent", 0)
+
+    if monthly_amount <= 0:
+        return {"success": False, "message": "Monthly amount must be greater than 0"}
+
+    # Determine if this is for loan payments or savings
+    is_loan = any(word in label.lower() for word in ["loan", "emi", "payment", "repayment"])
+    y_label = "Total Paid" if is_loan else "Total Saved"
+    narrative_verb = "paid" if is_loan else "saved"
+
+    # Calculate cumulative amount per year
+    series_data = [{"x": 0, "y": 0}]
+    cumulative = 0
+    current_monthly = monthly_amount
+
+    for year in range(1, int(years) + 1):
+        # Add 12 months
+        yearly_amount = current_monthly * 12
+        cumulative += yearly_amount
+        series_data.append({"x": year, "y": round(cumulative, 0)})
+
+        # Apply annual increase for next year (if any)
+        if annual_increase > 0:
+            current_monthly *= (1 + annual_increase / 100)
+
+    # Handle partial years (e.g., 3.5 years = 42 months)
+    if years != int(years):
+        partial_months = (years - int(years)) * 12
+        partial_amount = current_monthly * partial_months
+        cumulative += partial_amount
+        series_data.append({"x": years, "y": round(cumulative, 0)})
+
+    return {
+        "success": True,
+        "visualization": {
+            "type": "visualization",
+            "spec_version": "1",
+            "viz_id": f"goal_{uuid4().hex[:8]}",
+            "title": f"{label} Projection",
+            "subtitle": f"${monthly_amount:,.0f}/month over {years} years",
+            "chart": {
+                "kind": "line",
+                "x_label": "Years",
+                "y_label": y_label,
+                "y_unit": "$"
+            },
+            "series": [{
+                "name": label,
+                "data": series_data
+            }],
+            "narrative": f"Total {narrative_verb} after {years} years: ${cumulative:,.0f}",
+            "meta": {
+                "calc_kind": "goal_projection",
+                "total_amount": round(cumulative, 0)
+            }
+        },
+        "message": "Goal projection visualization generated"
+    }
