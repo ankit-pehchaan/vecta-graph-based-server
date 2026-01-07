@@ -679,7 +679,7 @@ Respond with JSON:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a financial goal classifier. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
@@ -914,7 +914,7 @@ Return only extracted fields as JSON.
 If nothing to extract, return: {{}}"""
 
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a financial data extractor. Always respond with valid JSON only. No markdown, no explanation."},
                 {"role": "user", "content": prompt}
@@ -1022,7 +1022,7 @@ Respond with JSON: {{"is_response_to_probe": true/false, "confirmed": true/false
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are an intent analyzer. Always respond with valid JSON."},
                 {"role": "user", "content": prompt}
@@ -1050,9 +1050,10 @@ BASELINE_FIELDS = ["age", "monthly_income", "monthly_expenses", "emergency_fund"
 GOAL_SPECIFIC_FIELDS = {
     "small_purchase": ["savings", "timeline"],
     "medium_purchase": ["savings", "timeline", "job_stability"],
-    "large_purchase": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance"],
-    "luxury": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance", "investments"],
-    "life_event": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance"],
+    "large_purchase": ["savings", "timeline", "job_stability", "marital_status", "dependents"],
+    "luxury": ["savings", "timeline", "job_stability", "marital_status", "dependents", "investments"],
+    # "life_event": ["savings", "timeline", "job_stability", "marital_status", "dependents", "life_insurance", "private_health_insurance"],
+    "life_event": ["savings", "timeline", "job_stability", "marital_status", "dependents"],
     "investment": ["savings", "investments", "superannuation", "timeline"],
     "emergency": ["job_stability", "marital_status", "dependents", "superannuation"]
 }
@@ -1169,7 +1170,7 @@ Respond with JSON:
 }}"""
 
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a financial risk assessor. Always respond with valid JSON."},
                 {"role": "user", "content": prompt}
