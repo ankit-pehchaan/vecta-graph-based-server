@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker, selectinload
 from app.models.user import User
 from app.models.financial import Asset, Liability, Insurance, Superannuation, Goal
 from app.tools.goal_discoverer import should_probe_for_goal
-from app.services.finance_calculators import amortize_balance_trajectory, FREQUENCY_PER_YEAR, pmt
+from app.services.finance_calculators import amortize_balance_trajectory, FREQUENCY_PER_YEAR, pmt, estimate_interest_rate
 
 # Configure logger (set to WARNING to disable verbose debug logs)
 logger = logging.getLogger("sync_tools")
@@ -415,19 +415,28 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
             ).scalar_one_or_none()
 
             if existing:
-                # Update existing
+                # Update existing - include all debt fields
                 existing.amount = debt.get("amount", existing.amount)
                 existing.interest_rate = debt.get("interest_rate", existing.interest_rate)
+                existing.monthly_payment = debt.get("monthly_payment", existing.monthly_payment)
+                existing.tenure_months = debt.get("tenure_months", existing.tenure_months)
+                if debt.get("institution"):
+                    existing.institution = debt.get("institution")
+                logger.debug(f"[UPDATE_STORE] Updated liability: {debt.get('type')} - amount={existing.amount}, rate={existing.interest_rate}, monthly={existing.monthly_payment}, tenure={existing.tenure_months}")
             else:
-                # Create new
+                # Create new - include all debt fields
                 new_liability = Liability(
                     user_id=user.id,
                     liability_type=debt.get("type", "unknown"),
                     description=debt.get("type", "Debt"),
                     amount=debt.get("amount"),
                     interest_rate=debt.get("interest_rate"),
+                    monthly_payment=debt.get("monthly_payment"),
+                    tenure_months=debt.get("tenure_months"),
+                    institution=debt.get("institution"),
                 )
                 session.add(new_liability)
+                logger.debug(f"[UPDATE_STORE] Created liability: {debt.get('type')} - amount={debt.get('amount')}, rate={debt.get('interest_rate')}, monthly={debt.get('monthly_payment')}, tenure={debt.get('tenure_months')}")
 
     # Handle hecs_debt -> Liability table
     if "hecs_debt" in updates and updates["hecs_debt"]:
@@ -862,7 +871,13 @@ Extract any of these fields if mentioned:
   * If user says "no emergency fund" or "don't have an emergency fund" → 0
   * If user says "3 months" → calculate: monthly_expenses * 3
   * If user says "I don't know" or "not sure" → "not_provided"
-- debts (list of {{type, amount, interest_rate}})
+- debts (list of {{type, amount, interest_rate, monthly_payment, tenure_months}})
+  * type: loan type (personal_loan, home_loan, car_loan, credit_card, etc.)
+  * amount: total loan amount/principal
+  * interest_rate: annual interest rate as percentage (e.g., 8 for 8%)
+  * monthly_payment: EMI/monthly repayment amount
+  * tenure_months: loan term in months (e.g., 3 years = 36 months)
+  * Example: "30k personal loan at 8% with 900 EMI for 3 years" → {{"type": "personal_loan", "amount": 30000, "interest_rate": 8, "monthly_payment": 900, "tenure_months": 36}}
   * If user says "I don't know" or "not sure" → "not_provided"
 - investments (list of {{type, amount}})
   * If user says "I don't know" or "not sure" → "not_provided"
@@ -1690,4 +1705,116 @@ def _build_goal_projection_viz(params: Optional[dict]) -> dict:
             }
         },
         "message": "Goal projection visualization generated"
+    }
+
+
+# =============================================================================
+# INTEREST RATE CALCULATOR (Sync) - Pure computational, no LLM
+# =============================================================================
+
+def sync_calculate_interest_rate(
+    principal: float,
+    monthly_payment: float,
+    tenure_months: int,
+    loan_type: str,
+    db_url: str,
+    session_id: str
+) -> dict:
+    """
+    Calculate interest rate from principal, EMI, and tenure using mathematical formula.
+
+    This is a pure computational tool (no LLM) that uses the EMI formula:
+    EMI = P × r × (1+r)^n / ((1+r)^n - 1)
+
+    Solves for r (interest rate) using bisection method.
+
+    Args:
+        principal: Loan amount (e.g., 30000)
+        monthly_payment: Monthly EMI payment (e.g., 900)
+        tenure_months: Loan term in months (e.g., 36 for 3 years)
+        loan_type: Type of loan (e.g., "personal_loan", "home_loan")
+        db_url: Database URL for updating the record
+        session_id: User's email/session ID
+
+    Returns:
+        dict with:
+        - calculated_rate: The estimated annual interest rate as percentage
+        - principal: The loan principal
+        - monthly_payment: The EMI
+        - tenure_months: The loan tenure
+        - total_interest: Total interest over loan lifetime
+        - total_payment: Total amount to be paid
+        - updated: Whether the debt record was updated in DB
+        - message: Human-readable summary
+    """
+    logger.info(f"[TOOL:calc_interest] Calculating rate for {loan_type}: principal={principal}, emi={monthly_payment}, tenure={tenure_months}")
+
+    # Validate inputs
+    if principal <= 0:
+        return {"error": "Principal must be greater than 0", "calculated_rate": None}
+    if monthly_payment <= 0:
+        return {"error": "Monthly payment must be greater than 0", "calculated_rate": None}
+    if tenure_months <= 0:
+        return {"error": "Tenure must be greater than 0 months", "calculated_rate": None}
+
+    # Calculate interest rate using bisection method
+    calculated_rate = estimate_interest_rate(principal, monthly_payment, tenure_months)
+
+    if calculated_rate == 0.0:
+        # Check if it's truly 0% or calculation failed
+        total_payment = monthly_payment * tenure_months
+        if total_payment <= principal:
+            # Valid 0% interest loan
+            pass
+        else:
+            return {
+                "error": "Could not calculate interest rate - please verify the loan details",
+                "calculated_rate": None,
+                "principal": principal,
+                "monthly_payment": monthly_payment,
+                "tenure_months": tenure_months
+            }
+
+    # Calculate totals
+    total_payment = monthly_payment * tenure_months
+    total_interest = total_payment - principal
+
+    logger.info(f"[TOOL:calc_interest] Calculated rate: {calculated_rate}%")
+
+    # Update the debt record in database if it exists
+    updated = False
+    session = _get_sync_session(db_url)
+    try:
+        user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+        if user:
+            # Find matching liability
+            existing = session.execute(
+                select(Liability).where(
+                    Liability.user_id == user.id,
+                    Liability.liability_type == loan_type
+                )
+            ).scalar_one_or_none()
+
+            if existing:
+                # Update interest rate if not already set
+                if existing.interest_rate is None:
+                    existing.interest_rate = calculated_rate
+                    session.commit()
+                    updated = True
+                    logger.info(f"[TOOL:calc_interest] Updated {loan_type} with calculated rate: {calculated_rate}%")
+    except Exception as e:
+        logger.error(f"[TOOL:calc_interest] Error updating DB: {e}")
+    finally:
+        session.close()
+
+    return {
+        "calculated_rate": calculated_rate,
+        "principal": principal,
+        "monthly_payment": monthly_payment,
+        "tenure_months": tenure_months,
+        "tenure_years": round(tenure_months / 12, 1),
+        "total_payment": round(total_payment, 2),
+        "total_interest": round(total_interest, 2),
+        "updated": updated,
+        "message": f"Calculated interest rate: {calculated_rate}% annual. Total payment over {tenure_months} months: ${total_payment:,.0f} (${total_interest:,.0f} interest)"
     }

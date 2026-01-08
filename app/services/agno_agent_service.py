@@ -174,6 +174,7 @@ class AgnoAgentService:
             sync_calculate_risk_profile,
             sync_generate_visualization,
             sync_confirm_loan_data,
+            sync_calculate_interest_rate,
         )
 
         # Get sync database URL from settings
@@ -330,6 +331,33 @@ class AgnoAgentService:
             """
             return sync_confirm_loan_data(loan_type, principal, annual_rate_percent, term_years, db_url, session_id)
 
+        def calculate_interest_rate(principal: float, monthly_payment: float, tenure_months: int, loan_type: str) -> dict:
+            """
+            Calculate interest rate from loan details using mathematical formula (no LLM).
+
+            Uses the EMI formula: EMI = P × r × (1+r)^n / ((1+r)^n - 1)
+            Solves for r (interest rate) using bisection method.
+
+            Args:
+                principal: Loan amount (e.g., 30000 for a $30k loan)
+                monthly_payment: Monthly EMI payment (e.g., 900)
+                tenure_months: Loan term in months (e.g., 36 for 3 years)
+                loan_type: Type of loan (e.g., "personal_loan", "home_loan", "car_loan")
+
+            Returns:
+                dict with:
+                - calculated_rate: Estimated annual interest rate as percentage (e.g., 8.5)
+                - total_payment: Total amount to be paid over loan lifetime
+                - total_interest: Total interest over loan lifetime
+                - message: Human-readable summary
+
+            When to call:
+            - When user provides principal, EMI, and tenure but NOT interest rate
+            - Example: "30k loan with 900 EMI for 3 years" → calculate the rate
+            - This is a pure math calculation, very fast and accurate
+            """
+            return sync_calculate_interest_rate(principal, monthly_payment, tenure_months, loan_type, db_url, session_id)
+
         # Return tools with names matching prompt references
         return [
             classify_goal,
@@ -338,6 +366,7 @@ class AgnoAgentService:
             calculate_risk_profile,
             generate_visualization,
             confirm_loan_data,
+            calculate_interest_rate,
         ]
 
     async def get_agent_with_session(self, username: str, session: AsyncSession) -> Agent:

@@ -40,53 +40,68 @@ def estimate_interest_rate(
     max_iterations: int = 100
 ) -> float:
     """
-    Estimate annual interest rate from EMI, principal, and tenure using Newton-Raphson.
+    Estimate annual interest rate from EMI, principal, and tenure using bisection method.
+
+    Uses the EMI formula: EMI = P × r × (1+r)^n / ((1+r)^n - 1)
+    Where r = monthly rate, n = tenure in months, P = principal
 
     Args:
-        principal: Loan amount
-        emi: Monthly EMI payment
-        tenure_months: Loan term in months
-        tolerance: Convergence tolerance
-        max_iterations: Maximum iterations
+        principal: Loan amount (e.g., 30000)
+        emi: Monthly EMI payment (e.g., 900)
+        tenure_months: Loan term in months (e.g., 36)
+        tolerance: Convergence tolerance for EMI match
+        max_iterations: Maximum iterations for bisection
 
     Returns:
         Estimated annual interest rate as percentage (e.g., 8.5 for 8.5%)
+        Returns 0.0 if inputs are invalid or rate cannot be determined
     """
     if principal <= 0 or emi <= 0 or tenure_months <= 0:
         return 0.0
 
-    # If total payments equal principal, rate is ~0
-    if abs(emi * tenure_months - principal) < 1:
+    # If total payments equal principal (no interest), rate is 0
+    total_payment = emi * tenure_months
+    if total_payment <= principal:
         return 0.0
 
-    # Initial guess: 10% annual = ~0.83% monthly
-    r = 0.01  # monthly rate guess
+    def calculate_emi(monthly_rate: float) -> float:
+        """Calculate EMI for given monthly rate."""
+        if monthly_rate <= 0:
+            return principal / tenure_months
+        factor = (1 + monthly_rate) ** tenure_months
+        return principal * monthly_rate * factor / (factor - 1)
 
+    # Bisection method: find rate where calculated EMI matches actual EMI
+    # Rate bounds: 0.01% to 50% annual (0.0000083 to 0.0417 monthly)
+    low = 0.0001 / 12   # ~0.01% annual
+    high = 0.50 / 12    # ~50% annual
+
+    # Verify bounds bracket the solution
+    emi_low = calculate_emi(low)
+    emi_high = calculate_emi(high)
+
+    if emi < emi_low or emi > emi_high:
+        # EMI outside reasonable range, try wider bounds
+        high = 1.0 / 12  # 100% annual
+        emi_high = calculate_emi(high)
+        if emi > emi_high:
+            return 0.0  # Cannot determine - EMI too high for any reasonable rate
+
+    # Bisection search
     for _ in range(max_iterations):
-        # PMT formula rearranged: EMI = P * r * (1+r)^n / ((1+r)^n - 1)
-        # We want to find r such that PMT(P, r, n) = EMI
+        mid = (low + high) / 2
+        emi_mid = calculate_emi(mid)
 
-        factor = (1 + r) ** tenure_months
-        calculated_emi = principal * r * factor / (factor - 1)
-
-        # Derivative of PMT with respect to r (for Newton-Raphson)
-        # This is complex, so we use secant method instead
-        diff = calculated_emi - emi
-
-        if abs(diff) < tolerance:
+        if abs(emi_mid - emi) < tolerance:
             break
 
-        # Adjust rate based on difference
-        if calculated_emi > emi:
-            r *= 0.95  # Rate too high
+        if emi_mid < emi:
+            low = mid  # Need higher rate
         else:
-            r *= 1.05  # Rate too low
-
-        # Clamp to reasonable bounds
-        r = max(0.0001, min(r, 0.05))  # 0.01% to 60% annual
+            high = mid  # Need lower rate
 
     # Convert monthly rate to annual percentage
-    annual_rate = r * 12 * 100
+    annual_rate = mid * 12 * 100
     return round(annual_rate, 2)
 
 
