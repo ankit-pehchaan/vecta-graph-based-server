@@ -330,8 +330,8 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         "target_amount": "target_amount",
     }
 
-    # Numeric fields that cannot store "not_provided" string (they are Float columns)
-    numeric_fields = {"age", "monthly_income", "monthly_expenses", "savings", "emergency_fund", "target_amount"}
+    # Numeric fields that cannot store "not_provided" string (they are Float/Integer columns)
+    numeric_fields = {"age", "monthly_income", "monthly_expenses", "savings", "emergency_fund", "target_amount", "dependents"}
 
     for source_key, target_key in field_mapping.items():
         if source_key in updates:
@@ -881,9 +881,17 @@ Extract any of these fields if mentioned:
   * If user says "I don't know" or "not sure" → "not_provided"
 - investments (list of {{type, amount}})
   * If user says "I don't know" or "not sure" → "not_provided"
-- marital_status (single/married/divorced)
+- marital_status (single/married/divorced/partnered/de_facto)
+  * "I am single" or "single right now" → "single"
+  * "I'm married" or "got married" → "married"
+  * "I have a partner" or "in a relationship" → "partnered"
+  * "de facto" or "living together" → "de_facto"
   * If user says "I don't know" or "not sure" or refuses → "not_provided"
-- dependents (integer: number of dependents)
+- dependents (integer: number of dependents - children or others financially dependent on user)
+  * "no dependents" or "no kids" or "just me" or "it's just me" → 0
+  * "2 kids" or "two children" → 2
+  * "I have a child" or "one kid" → 1
+  * Single with no mention of dependents and says "just me" → 0
   * If user says "I don't know" or "not sure" → "not_provided"
 - job_stability (stable/casual/contract)
   * If user says "I don't know" or "not sure" → "not_provided"
@@ -1131,17 +1139,51 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
 
         # Check populated fields
         populated_fields = []
+        super_incomplete = None  # Track superannuation partial completion
+
         for field in required_fields:
             value = current_store.get(field)
             if value is not None:
-                # Special handling for superannuation - needs balance, employer_rate, AND personal_rate
+                # Special handling for superannuation - track partial completion
+                # If user provided ANY info, mark as populated (don't re-ask)
+                # But track missing sub-fields and suggest document upload
                 if field == "superannuation":
                     if isinstance(value, dict):
-                        has_balance = value.get("balance") is not None and value.get("balance") != "not_provided"
-                        has_employer = value.get("employer_contribution_rate") is not None and value.get("employer_contribution_rate") != "not_provided"
-                        has_personal = value.get("personal_contribution_rate") is not None and value.get("personal_contribution_rate") != "not_provided"
-                        if has_balance and has_employer and has_personal:
+                        super_fields = {
+                            "balance": value.get("balance"),
+                            "employer_contribution_rate": value.get("employer_contribution_rate"),
+                            "personal_contribution_rate": value.get("personal_contribution_rate")
+                        }
+
+                        # Check which fields have data
+                        has_balance = super_fields["balance"] is not None and super_fields["balance"] != "not_provided"
+                        has_employer = super_fields["employer_contribution_rate"] is not None and super_fields["employer_contribution_rate"] != "not_provided"
+                        has_personal = super_fields["personal_contribution_rate"] is not None and super_fields["personal_contribution_rate"] != "not_provided"
+
+                        has_any_super_data = has_balance or has_employer or has_personal
+
+                        if has_any_super_data:
+                            # Mark as populated - don't keep asking about super
                             populated_fields.append(field)
+
+                            # But track what's missing for document upload suggestion
+                            missing_super_fields = []
+                            if not has_balance:
+                                missing_super_fields.append("balance")
+                            if not has_employer:
+                                missing_super_fields.append("employer_contribution_rate")
+                            if not has_personal:
+                                missing_super_fields.append("personal_contribution_rate")
+
+                            if missing_super_fields:
+                                super_incomplete = {
+                                    "has_partial_data": True,
+                                    "provided_fields": [k for k, v in super_fields.items() if v is not None and v != "not_provided"],
+                                    "missing_fields": missing_super_fields,
+                                    "suggestion": "For a complete picture of your superannuation, you could upload your super statement. This would show your current balance and contribution rates accurately.",
+                                    "document_type": "superannuation_statement"
+                                }
+
                 # Special handling for life_insurance - just needs a record to exist (any field populated)
                 elif field == "life_insurance":
                     if isinstance(value, dict):
@@ -1174,13 +1216,22 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
             "missing_fields": missing_fields
         })
 
-        return {
+        # Build response
+        result = {
             "goal_type": goal_classification,
             "required_fields": required_fields,
             "missing_fields": missing_fields,
             "populated_fields": populated_fields,
             "message": f"Missing: {len(missing_fields)} fields"
         }
+
+        # Add super_incomplete if user has partial super data
+        # This tells the agent to suggest document upload instead of re-asking
+        if super_incomplete:
+            result["super_incomplete"] = super_incomplete
+            result["message"] += f". Superannuation has partial data - suggest document upload for: {', '.join(super_incomplete['missing_fields'])}"
+
+        return result
 
     finally:
         session.close()

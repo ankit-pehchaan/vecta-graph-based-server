@@ -243,12 +243,25 @@ class AgnoAgentService:
                 - missing_fields: Fields still needed (empty = ready for Phase 3)
                 - populated_fields: Fields already collected
                 - message: Summary of status
+                - super_incomplete: (optional) If user provided partial super data, contains:
+                    - has_partial_data: True
+                    - provided_fields: What user already gave (e.g., ["personal_contribution_rate"])
+                    - missing_fields: What's still missing (e.g., ["balance", "employer_contribution_rate"])
+                    - suggestion: Message to suggest document upload
+                    - document_type: "superannuation_statement"
 
             When to call:
             - EVERY turn after extract_financial_facts
             - This tells you what questions to ask next
             - Check the "missing_fields" in the response
             - If missing_fields is empty → Move to Phase 3
+
+            IMPORTANT - Handling super_incomplete:
+            - If super_incomplete is present, DO NOT ask more super questions verbally
+            - Instead, offer to upload their super statement for complete details
+            - Example: "I've noted your 2% extra contribution. For a complete picture,
+              would you like to upload your superannuation statement?"
+            - Continue with other missing fields, don't block on super details
             """
             return sync_determine_required_info(db_url, session_id)
 

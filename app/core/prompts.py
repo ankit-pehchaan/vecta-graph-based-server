@@ -1993,6 +1993,15 @@ Determines what information you still need based on their goal type.
 - This tells you what questions to ask next
 - Check the "missing_fields" in the response
 
+**IMPORTANT - Handling super_incomplete:**
+If the response contains `super_incomplete`, it means user provided partial superannuation data.
+DO NOT keep asking more super questions verbally. Instead:
+- Acknowledge what they've provided (e.g., "I've noted your 2% extra contribution")
+- Offer document upload for complete details
+- Say something like: "For a complete picture of your super, would you like to upload your super statement?"
+- Continue gathering OTHER missing fields - don't block on super details
+- The user's partial info is enough to continue the conversation
+
 ### 4. calculate_risk_profile()
 Calculates objective risk assessment based on their complete situation.
 
