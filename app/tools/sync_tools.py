@@ -330,10 +330,19 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         "target_amount": "target_amount",
     }
 
+    # Numeric fields that cannot store "not_provided" string (they are Float columns)
+    numeric_fields = {"age", "monthly_income", "monthly_expenses", "savings", "emergency_fund", "target_amount"}
+
     for source_key, target_key in field_mapping.items():
         if source_key in updates:
             old_value = getattr(user, target_key, None)
             new_value = updates[source_key]
+
+            # Skip "not_provided" for numeric fields - they can't store strings in Float columns
+            if source_key in numeric_fields and new_value == "not_provided":
+                logger.debug(f"[UPDATE_STORE] Skipping {target_key}: value is 'not_provided' (user doesn't know)")
+                continue
+
             setattr(user, target_key, new_value)
             logger.debug(f"[UPDATE_STORE] Set {target_key}: {old_value} → {new_value}")
             print(f"[UPDATE_STORE] Set {target_key}: {old_value} → {new_value}")
@@ -341,7 +350,8 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
 
     # Handle savings -> Asset table (for cash_balance calculation)
     # Use 'is not None' to handle 0 values (user explicitly said "no savings")
-    if "savings" in updates and updates["savings"] is not None:
+    # Skip "not_provided" - Asset.value is a Float column
+    if "savings" in updates and updates["savings"] is not None and updates["savings"] != "not_provided":
         savings_value = updates["savings"]
         existing_savings = session.execute(
             select(Asset).where(
@@ -365,7 +375,8 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
 
     # Handle emergency_fund -> Asset table (normalized storage)
     # Use 'is not None' to handle 0 values (user explicitly said "no emergency fund")
-    if "emergency_fund" in updates and updates["emergency_fund"] is not None:
+    # Skip "not_provided" - Asset.value is a Float column
+    if "emergency_fund" in updates and updates["emergency_fund"] is not None and updates["emergency_fund"] != "not_provided":
         emergency_fund_value = updates["emergency_fund"]
         existing_ef = session.execute(
             select(Asset).where(
