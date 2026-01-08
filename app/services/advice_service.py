@@ -43,7 +43,7 @@ from app.core.prompts import (
     DOCUMENT_CONTINUATION_NO_DATA,
     DOCUMENT_REJECTION_CONTINUATION,
 )
-from app.tools.sync_tools import get_pending_visualizations
+from app.tools.sync_tools import get_pending_visualizations, set_last_agent_question
 import re
 
 # Configure logger
@@ -650,9 +650,12 @@ class AdviceService:
                 logger.debug(f"[TOOL_AGENT] Parsed response: {user_facing_response[:100]}...")
 
                 # Track last question for next turn
+                # Store in both local dict (for this instance) and sync_tools storage (for the tool to access)
                 last_q = self._extract_last_question(user_facing_response)
                 if last_q:
                     self._last_agent_questions[username] = last_q
+                    set_last_agent_question(username, last_q)
+                    logger.debug(f"[TOOL_AGENT] Stored last question for next turn: {last_q[:50]}...")
 
                 # Stream the response in chunks
                 response_id = str(uuid.uuid4())

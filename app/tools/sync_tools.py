@@ -28,6 +28,10 @@ _pending_visualizations: dict[str, list[dict]] = {}
 # Key: session_id, Value: dict of temporary data
 _temporary_data: dict[str, dict] = {}
 
+# Storage for last agent question per session - used to track what question the user is answering
+# Key: session_id, Value: last question string
+_last_agent_questions: dict[str, str] = {}
+
 
 def get_pending_visualizations(session_id: str) -> list[dict]:
     """Get and clear any pending visualizations for a session."""
@@ -58,8 +62,17 @@ def clear_temporary_data(session_id: str, key: str = None) -> None:
     """Clear temporary data after confirmation or rejection."""
     if key and session_id in _temporary_data:
         _temporary_data[session_id].pop(key, None)
-    elif session_id in _temporary_data:
-        del _temporary_data[session_id]
+
+
+def get_last_agent_question(session_id: str) -> str:
+    """Get the last question the agent asked for this session."""
+    return _last_agent_questions.get(session_id, "")
+
+
+def set_last_agent_question(session_id: str, question: str) -> None:
+    """Store the last question the agent asked for this session."""
+    if question:
+        _last_agent_questions[session_id] = question
 
 
 def _get_sync_session(db_url: str) -> Session:
@@ -755,7 +768,16 @@ def sync_extract_financial_facts(
     """Extract financial facts from user's message (sync version)."""
     logger.info(f"[TOOL:extract_facts] Called for session: {session_id}")
     logger.info(f"[TOOL:extract_facts] User message: {user_message[:100]}")
-    logger.info(f"[TOOL:extract_facts] Last question: {agent_last_question[:100] if agent_last_question else 'None'}")
+
+    # Use stored last question (set by advice_service after each response)
+    # This is more reliable than what the agent passes, as it's extracted from the actual response sent to UI
+    stored_last_question = get_last_agent_question(session_id)
+    effective_last_question = stored_last_question or agent_last_question
+
+    logger.info(f"[TOOL:extract_facts] Stored last question: {stored_last_question[:100] if stored_last_question else 'None'}")
+    logger.info(f"[TOOL:extract_facts] Agent-provided last question: {agent_last_question[:100] if agent_last_question else 'None'}")
+    logger.info(f"[TOOL:extract_facts] Using: {effective_last_question[:100] if effective_last_question else 'None'}")
+
     client = OpenAI()
     session = _get_sync_session(db_url)
 
@@ -804,7 +826,7 @@ def sync_extract_financial_facts(
                     }
 
         # Extract financial facts
-        context_line = f"\nAgent's last question: \"{agent_last_question}\"\n" if agent_last_question else ""
+        context_line = f"\nAgent's last question: \"{effective_last_question}\"\n" if effective_last_question else ""
 
         prompt = f"""Extract financial facts from the user's message.
 
