@@ -75,18 +75,51 @@ def set_last_agent_question(session_id: str, question: str) -> None:
         _last_agent_questions[session_id] = question
 
 
-# Storage for debts confirmation status per session
+# Storage for debts confirmation status per session (in-memory cache, backed by DB)
 _debts_confirmed: dict[str, bool] = {}
 
 
-def get_debts_confirmed(session_id: str) -> bool:
-    """Check if user has confirmed they have no other debts."""
-    return _debts_confirmed.get(session_id, False)
+def get_debts_confirmed(session_id: str, db_url: str = None) -> bool:
+    """Check if user has confirmed they have no other debts.
+
+    First checks in-memory cache, then falls back to database if db_url provided.
+    """
+    # Check in-memory cache first
+    if session_id in _debts_confirmed:
+        return _debts_confirmed[session_id]
+
+    # If not in cache and db_url provided, check database
+    if db_url:
+        session = _get_sync_session(db_url)
+        try:
+            user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+            if user and user.debts_confirmed:
+                _debts_confirmed[session_id] = True
+                return True
+        finally:
+            session.close()
+
+    return False
 
 
-def set_debts_confirmed(session_id: str, confirmed: bool) -> None:
-    """Mark that user has confirmed no other debts."""
+def set_debts_confirmed(session_id: str, confirmed: bool, db_url: str = None) -> None:
+    """Mark that user has confirmed no other debts.
+
+    Updates both in-memory cache and database if db_url provided.
+    """
     _debts_confirmed[session_id] = confirmed
+
+    # Also persist to database if db_url provided
+    if db_url:
+        session = _get_sync_session(db_url)
+        try:
+            user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+            if user:
+                user.debts_confirmed = confirmed
+                session.commit()
+                logger.info(f"[DEBTS_CONFIRMED] Persisted debts_confirmed={confirmed} for user: {session_id}")
+        finally:
+            session.close()
 
 
 def check_debt_completeness(debt: dict) -> dict:
@@ -307,6 +340,7 @@ def _get_user_store(session: Session, email: str) -> dict:
         "risk_profile": user.risk_profile,
         "conversation_phase": user.conversation_phase or "initial",
         "pending_probe": user.pending_probe,
+        "debts_confirmed": user.debts_confirmed or False,
     }
 
 
@@ -362,6 +396,7 @@ def _get_empty_store() -> dict:
         "risk_profile": None,
         "conversation_phase": "initial",  # initial, assessment, analysis, planning
         "pending_probe": None,  # Stores current probing question if any
+        "debts_confirmed": False,  # Whether user confirmed no other debts
     }
 
 
@@ -403,6 +438,7 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         "job_stability": "job_stability",
         "timeline": "timeline",
         "target_amount": "target_amount",
+        "debts_confirmed": "debts_confirmed",
     }
 
     # Numeric fields that cannot store "not_provided" string (they are Float/Integer columns)
@@ -1118,7 +1154,7 @@ If nothing to extract, return: {{}}"""
         # Handle no_other_debts confirmation
         no_other_debts = extracted_facts.pop("no_other_debts", None)
         if no_other_debts is True:
-            set_debts_confirmed(session_id, True)
+            set_debts_confirmed(session_id, True, db_url)
             logger.info(f"[TOOL:extract_facts] User confirmed no other debts for session: {session_id}")
 
         # Update store with extracted facts
@@ -1310,7 +1346,8 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
         # Special handling for debts - check completeness and confirmation
         debts_incomplete = None
         debts = current_store.get("debts", [])
-        debts_confirmed = get_debts_confirmed(session_id)
+        # Use debts_confirmed from store (already loaded from DB)
+        debts_confirmed = current_store.get("debts_confirmed", False)
 
         if debts and len(debts) > 0:
             # Check each debt for completeness

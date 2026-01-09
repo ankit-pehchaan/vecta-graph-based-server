@@ -83,6 +83,7 @@ class User(Base):
     missing_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pending_probe: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     risk_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    debts_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -167,6 +168,7 @@ class User(Base):
             "missing_fields": self.missing_fields,
             "pending_probe": self.pending_probe,
             "risk_profile": self.risk_profile,
+            "debts_confirmed": self.debts_confirmed,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -215,6 +217,7 @@ class User(Base):
             "missing_fields": self.missing_fields or [],
             "pending_probe": self.pending_probe,
             "risk_profile": self.risk_profile,
+            "debts_confirmed": self.debts_confirmed or False,
             # Related entities
             "goals": [g.to_dict() for g in self.goals] if self.goals else [],
             "assets": [a.to_dict() for a in self.assets] if self.assets else [],
