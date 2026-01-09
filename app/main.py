@@ -17,6 +17,7 @@ from app.core.handler import (
 )
 from app.core.config import settings
 from app.core.database import db_manager
+from app.core.langsmith_tracing import initialize_langsmith_tracing
 
 logger = logging.getLogger(__name__)
 logging.getLogger('sqlalchemy.engine').setLevel(logging.DEBUG)
@@ -26,6 +27,9 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
     # Startup
     logger.info("Starting up application...")
+
+    # Initialize LangSmith tracing (if configured)
+    initialize_langsmith_tracing()
 
     # Initialize database connection
     try:

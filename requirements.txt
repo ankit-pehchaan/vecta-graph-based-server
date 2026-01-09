@@ -34,3 +34,8 @@ httpx>=0.25.0
 
 # AWS Encryption
 aws-encryption-sdk>=3.1.0
+
+# LangSmith Observability
+openinference-instrumentation-agno>=0.1.25
+opentelemetry-sdk>=1.39.0
+opentelemetry-exporter-otlp>=1.39.0

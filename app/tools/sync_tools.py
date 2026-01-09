@@ -75,6 +75,81 @@ def set_last_agent_question(session_id: str, question: str) -> None:
         _last_agent_questions[session_id] = question
 
 
+# Storage for debts confirmation status per session
+_debts_confirmed: dict[str, bool] = {}
+
+
+def get_debts_confirmed(session_id: str) -> bool:
+    """Check if user has confirmed they have no other debts."""
+    return _debts_confirmed.get(session_id, False)
+
+
+def set_debts_confirmed(session_id: str, confirmed: bool) -> None:
+    """Mark that user has confirmed no other debts."""
+    _debts_confirmed[session_id] = confirmed
+
+
+def check_debt_completeness(debt: dict) -> dict:
+    """
+    Check if a debt entry has all required fields based on its type.
+
+    Required fields by debt type:
+    - personal_loan, car_loan, home_loan: amount, interest_rate, (monthly_payment OR tenure_months)
+    - credit_card: amount (balance)
+    - hecs: amount only
+
+    Returns:
+        dict with:
+        - is_complete: bool
+        - missing_fields: list of missing field names
+        - debt_type: the type of debt
+    """
+    debt_type = debt.get("type", "unknown")
+    amount = debt.get("amount")
+    interest_rate = debt.get("interest_rate")
+    monthly_payment = debt.get("monthly_payment")
+    tenure_months = debt.get("tenure_months")
+
+    missing = []
+
+    # All debts need an amount
+    if amount is None:
+        missing.append("amount")
+
+    # Type-specific requirements
+    if debt_type in ["personal_loan", "car_loan", "home_loan", "mortgage"]:
+        # Loans need interest rate
+        if interest_rate is None:
+            missing.append("interest_rate")
+        # Loans need either monthly_payment or tenure_months (we can calculate the other)
+        if monthly_payment is None and tenure_months is None:
+            missing.append("monthly_payment or tenure_months")
+
+    elif debt_type == "credit_card":
+        # Credit cards: amount is enough, interest rate is optional (many don't know)
+        pass
+
+    elif debt_type == "hecs":
+        # HECS: just amount needed (income-contingent repayment)
+        pass
+
+    else:
+        # Unknown type: at minimum need amount
+        pass
+
+    return {
+        "is_complete": len(missing) == 0,
+        "missing_fields": missing,
+        "debt_type": debt_type,
+        "provided_fields": {
+            "amount": amount,
+            "interest_rate": interest_rate,
+            "monthly_payment": monthly_payment,
+            "tenure_months": tenure_months
+        }
+    }
+
+
 def _get_sync_session(db_url: str) -> Session:
     """Create a synchronous database session."""
     engine = create_engine(db_url, pool_pre_ping=True)
@@ -872,13 +947,24 @@ Extract any of these fields if mentioned:
   * If user says "3 months" → calculate: monthly_expenses * 3
   * If user says "I don't know" or "not sure" → "not_provided"
 - debts (list of {{type, amount, interest_rate, monthly_payment, tenure_months}})
-  * type: loan type (personal_loan, home_loan, car_loan, credit_card, etc.)
+  * type: loan type (personal_loan, home_loan, car_loan, credit_card, hecs, etc.)
   * amount: total loan amount/principal
   * interest_rate: annual interest rate as percentage (e.g., 8 for 8%)
   * monthly_payment: EMI/monthly repayment amount
   * tenure_months: loan term in months (e.g., 3 years = 36 months)
-  * Example: "30k personal loan at 8% with 900 EMI for 3 years" → {{"type": "personal_loan", "amount": 30000, "interest_rate": 8, "monthly_payment": 900, "tenure_months": 36}}
-  * If user says "I don't know" or "not sure" → "not_provided"
+  * EXAMPLES:
+    - Full info: "30k personal loan at 8% with 900 EMI for 3 years" → {{"type": "personal_loan", "amount": 30000, "interest_rate": 8, "monthly_payment": 900, "tenure_months": 36}}
+    - Partial info: "I have a personal loan" → {{"type": "personal_loan"}} (amount missing - agent should ask)
+    - Partial info: "personal loan of 30k" → {{"type": "personal_loan", "amount": 30000}} (rate/tenure missing - agent should ask)
+    - Credit card: "5k on credit card" → {{"type": "credit_card", "amount": 5000}}
+    - HECS: "20k HECS debt" → {{"type": "hecs", "amount": 20000}}
+  * IMPORTANT: Extract whatever info is provided, even if incomplete. The system will ask for missing details.
+  * If user says "I don't know" or "not sure" about specific field → omit that field (don't include it)
+- no_other_debts (boolean: true if user confirms they have no other debts)
+  * "no other debts" or "that's all" or "that's it" or "nothing else" → true
+  * "no, I don't have any debts" or "no debts" or "I'm debt free" → true
+  * When agent asks "any other debts?" and user says "no" or "nope" → true
+  * IMPORTANT: Only set this when user explicitly confirms no other debts. Don't assume.
 - investments (list of {{type, amount}})
   * If user says "I don't know" or "not sure" → "not_provided"
 - marital_status (single/married/divorced/partnered/de_facto)
@@ -1028,6 +1114,12 @@ If nothing to extract, return: {{}}"""
                             logger.info(f"[TOOL:extract_facts] Created Goal record: {goal}")
 
             _update_user_store(session, session_id, {"stated_goals": stated_goals})
+
+        # Handle no_other_debts confirmation
+        no_other_debts = extracted_facts.pop("no_other_debts", None)
+        if no_other_debts is True:
+            set_debts_confirmed(session_id, True)
+            logger.info(f"[TOOL:extract_facts] User confirmed no other debts for session: {session_id}")
 
         # Update store with extracted facts
         probing_suggestions = []
@@ -1205,9 +1297,74 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
                 elif isinstance(value, dict) and any(v is not None for v in value.values()):
                     populated_fields.append(field)
                 elif isinstance(value, list) and len(value) > 0:
-                    populated_fields.append(field)
+                    # Special handling for debts - check completeness of each debt
+                    if field == "debts":
+                        # Debts list exists - check each debt for completeness
+                        # Will be handled separately below
+                        pass
+                    else:
+                        populated_fields.append(field)
                 elif isinstance(value, (str, int, float, bool)):
                     populated_fields.append(field)
+
+        # Special handling for debts - check completeness and confirmation
+        debts_incomplete = None
+        debts = current_store.get("debts", [])
+        debts_confirmed = get_debts_confirmed(session_id)
+
+        if debts and len(debts) > 0:
+            # Check each debt for completeness
+            incomplete_debts = []
+            complete_debts = []
+
+            for debt in debts:
+                # Skip "no debts" placeholder
+                if debt.get("type") == "none":
+                    continue
+
+                completeness = check_debt_completeness(debt)
+                if completeness["is_complete"]:
+                    complete_debts.append({
+                        "type": completeness["debt_type"],
+                        "status": "complete"
+                    })
+                else:
+                    incomplete_debts.append({
+                        "type": completeness["debt_type"],
+                        "missing_fields": completeness["missing_fields"],
+                        "provided": completeness["provided_fields"]
+                    })
+
+            if incomplete_debts:
+                # Has incomplete debts - need to collect more data
+                debts_incomplete = {
+                    "has_debts": True,
+                    "incomplete_debts": incomplete_debts,
+                    "complete_debts": complete_debts,
+                    "all_confirmed": debts_confirmed,
+                    "action_needed": "collect_missing_fields",
+                    "message": f"Need more details for: {', '.join([d['type'] for d in incomplete_debts])}"
+                }
+                # Don't mark debts as populated until all are complete
+            elif not debts_confirmed:
+                # All debts complete but haven't confirmed no other debts
+                debts_incomplete = {
+                    "has_debts": True,
+                    "incomplete_debts": [],
+                    "complete_debts": complete_debts,
+                    "all_confirmed": False,
+                    "action_needed": "confirm_no_other_debts",
+                    "message": "All mentioned debts have complete data. Ask if user has any other debts."
+                }
+                # Mark as populated since we have complete data, but flag needs confirmation
+                populated_fields.append("debts")
+            else:
+                # All debts complete and confirmed
+                populated_fields.append("debts")
+        elif debts_confirmed:
+            # User said "no debts" - mark as populated
+            populated_fields.append("debts")
+        # else: debts not provided yet, stays in missing_fields
 
         missing_fields = list(set(required_fields) - set(populated_fields))
 
@@ -1230,6 +1387,15 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
         if super_incomplete:
             result["super_incomplete"] = super_incomplete
             result["message"] += f". Superannuation has partial data - suggest document upload for: {', '.join(super_incomplete['missing_fields'])}"
+
+        # Add debts_incomplete if debts need more data or confirmation
+        # This tells the agent what action to take for debts
+        if debts_incomplete:
+            result["debts_incomplete"] = debts_incomplete
+            if debts_incomplete["action_needed"] == "collect_missing_fields":
+                result["message"] += f". Debts incomplete - ask about: {debts_incomplete['message']}"
+            elif debts_incomplete["action_needed"] == "confirm_no_other_debts":
+                result["message"] += ". Ask if user has any other debts/liabilities."
 
         return result
 

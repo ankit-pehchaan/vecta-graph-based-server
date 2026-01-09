@@ -2002,6 +2002,27 @@ DO NOT keep asking more super questions verbally. Instead:
 - Continue gathering OTHER missing fields - don't block on super details
 - The user's partial info is enough to continue the conversation
 
+**IMPORTANT - Handling debts_incomplete:**
+If the response contains `debts_incomplete`, handle based on `action_needed`:
+
+1. **action_needed = "collect_missing_fields"**:
+   - User mentioned a debt but didn't give all details
+   - Ask for the specific missing info for that debt
+   - Example: User said "I have a personal loan" but no amount
+   - Ask: "How much is the personal loan for, and what's the interest rate?"
+   - Keep asking until you have: amount, interest_rate, and either monthly_payment OR tenure_months
+
+2. **action_needed = "confirm_no_other_debts"**:
+   - All mentioned debts have complete data
+   - But user hasn't confirmed if there are more debts
+   - Ask: "Do you have any other debts or liabilities - like credit cards, car loans, or HECS?"
+   - User's "no" or "that's all" will mark debts as confirmed
+
+3. **User mentions NEW debt later**:
+   - If user casually mentions another debt later (e.g., "oh I forgot about my credit card")
+   - It will be extracted and added to their profile
+   - If incomplete, you'll get debts_incomplete again with the new debt's missing fields
+
 ### 4. calculate_risk_profile()
 Calculates objective risk assessment based on their complete situation.
 

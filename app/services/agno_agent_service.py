@@ -243,12 +243,14 @@ class AgnoAgentService:
                 - missing_fields: Fields still needed (empty = ready for Phase 3)
                 - populated_fields: Fields already collected
                 - message: Summary of status
-                - super_incomplete: (optional) If user provided partial super data, contains:
-                    - has_partial_data: True
-                    - provided_fields: What user already gave (e.g., ["personal_contribution_rate"])
-                    - missing_fields: What's still missing (e.g., ["balance", "employer_contribution_rate"])
-                    - suggestion: Message to suggest document upload
-                    - document_type: "superannuation_statement"
+                - super_incomplete: (optional) If user provided partial super data
+                - debts_incomplete: (optional) If debts need more data or confirmation, contains:
+                    - has_debts: True if user has mentioned debts
+                    - incomplete_debts: List of debts with missing fields
+                    - complete_debts: List of complete debts
+                    - all_confirmed: Whether user confirmed no other debts
+                    - action_needed: "collect_missing_fields" or "confirm_no_other_debts"
+                    - message: What to ask the user
 
             When to call:
             - EVERY turn after extract_financial_facts
@@ -258,10 +260,17 @@ class AgnoAgentService:
 
             IMPORTANT - Handling super_incomplete:
             - If super_incomplete is present, DO NOT ask more super questions verbally
-            - Instead, offer to upload their super statement for complete details
-            - Example: "I've noted your 2% extra contribution. For a complete picture,
-              would you like to upload your superannuation statement?"
-            - Continue with other missing fields, don't block on super details
+            - Offer document upload instead for complete details
+            - Continue with other missing fields
+
+            IMPORTANT - Handling debts_incomplete:
+            - If action_needed is "collect_missing_fields":
+              * Ask for the missing info for that specific debt
+              * Example: "For your personal loan, what's the interest rate and monthly payment?"
+            - If action_needed is "confirm_no_other_debts":
+              * Ask: "Do you have any other debts or liabilities I should know about?"
+              * User's "no" will be captured as no_other_debts=true
+            - If user mentions a NEW debt later, it will be added and checked for completeness
             """
             return sync_determine_required_info(db_url, session_id)
 
