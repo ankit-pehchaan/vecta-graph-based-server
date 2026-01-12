@@ -1694,7 +1694,8 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
         savings_emergency_linked = current_store.get("savings_emergency_linked", False)
         if savings_emergency_linked and "emergency_fund" in required_fields:
             # If linked, emergency_fund is effectively answered (same as savings)
-            # We'll handle this below
+            # We'll handle this below in the loop
+            pass
 
         # Check populated fields
         populated_fields = []
