@@ -14,6 +14,20 @@ from sqlalchemy.orm import Session, sessionmaker, selectinload
 from app.models.user import User
 from app.models.financial import Asset, Liability, Insurance, Superannuation, Goal
 from app.tools.goal_discoverer import should_probe_for_goal
+from app.tools.message_classifier import classify_message, MessageType, detect_ambiguity
+from app.tools.conversation_manager import (
+    add_conversation_turn,
+    get_conversation_history,
+    format_history_for_prompt,
+    update_field_state,
+    get_field_state,
+    is_field_resolved,
+    record_correction,
+    link_savings_emergency_fund,
+    is_savings_emergency_linked,
+    detect_savings_emergency_link,
+    FieldState,
+)
 from app.services.finance_calculators import amortize_balance_trajectory, FREQUENCY_PER_YEAR, pmt, estimate_interest_rate
 
 # Configure logger (set to WARNING to disable verbose debug logs)
@@ -341,6 +355,11 @@ def _get_user_store(session: Session, email: str) -> dict:
         "conversation_phase": user.conversation_phase or "initial",
         "pending_probe": user.pending_probe,
         "debts_confirmed": user.debts_confirmed or False,
+        # Conversation tracking
+        "conversation_history": user.conversation_history or [],
+        "field_states": user.field_states or {},
+        "savings_emergency_linked": user.savings_emergency_linked or False,
+        "last_correction": user.last_correction,
     }
 
 
@@ -397,6 +416,11 @@ def _get_empty_store() -> dict:
         "conversation_phase": "initial",  # initial, assessment, analysis, planning
         "pending_probe": None,  # Stores current probing question if any
         "debts_confirmed": False,  # Whether user confirmed no other debts
+        # Conversation tracking
+        "conversation_history": [],  # Recent conversation turns
+        "field_states": {},  # Track field completion states
+        "savings_emergency_linked": False,  # Whether savings IS the emergency fund
+        "last_correction": None,  # Last correction made by user
     }
 
 
@@ -439,6 +463,11 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         "timeline": "timeline",
         "target_amount": "target_amount",
         "debts_confirmed": "debts_confirmed",
+        # Conversation tracking fields
+        "conversation_history": "conversation_history",
+        "field_states": "field_states",
+        "savings_emergency_linked": "savings_emergency_linked",
+        "last_correction": "last_correction",
     }
 
     # Numeric fields that cannot store "not_provided" string (they are Float/Integer columns)
@@ -887,6 +916,223 @@ Respond with JSON:
 
 
 # =============================================================================
+# HELPER FUNCTIONS FOR MESSAGE HANDLING
+# =============================================================================
+
+# Mapping of question keywords to profile fields
+QUESTION_FIELD_MAPPING = {
+    # Income
+    "income": "monthly_income",
+    "earn": "monthly_income",
+    "salary": "monthly_income",
+    "wage": "monthly_income",
+    "bring in": "monthly_income",
+    "making": "monthly_income",
+    # Expenses
+    "expense": "monthly_expenses",
+    "spend": "monthly_expenses",
+    "cost": "monthly_expenses",
+    # Savings
+    "savings": "savings",
+    "saved": "savings",
+    "cash": "savings",
+    "bank": "savings",
+    # Emergency fund
+    "emergency": "emergency_fund",
+    "rainy day": "emergency_fund",
+    # Age
+    "age": "age",
+    "old are you": "age",
+    "how old": "age",
+    # Relationship
+    "married": "marital_status",
+    "single": "marital_status",
+    "relationship": "marital_status",
+    "partner": "marital_status",
+    # Dependents
+    "kids": "dependents",
+    "children": "dependents",
+    "dependents": "dependents",
+    # Job
+    "job": "job_stability",
+    "work": "job_stability",
+    "employment": "job_stability",
+    "stable": "job_stability",
+    # Debts
+    "debt": "debts",
+    "loan": "debts",
+    "mortgage": "debts",
+    "owe": "debts",
+    "credit card": "debts",
+    "hecs": "debts",
+    # Super
+    "super": "superannuation",
+    "superannuation": "superannuation",
+    "retirement": "superannuation",
+    # Insurance
+    "life insurance": "life_insurance",
+    "health insurance": "private_health_insurance",
+    # Timeline
+    "when": "timeline",
+    "timeline": "timeline",
+    "how long": "timeline",
+    "years": "timeline",
+}
+
+
+def _determine_field_from_question(question: str) -> Optional[str]:
+    """
+    Determine which profile field a question is asking about.
+
+    Args:
+        question: The agent's last question
+
+    Returns:
+        Field name or None if can't determine
+    """
+    if not question:
+        return None
+
+    question_lower = question.lower()
+
+    # Check each keyword in order of specificity
+    for keyword, field in QUESTION_FIELD_MAPPING.items():
+        if keyword in question_lower:
+            return field
+
+    return None
+
+
+def _handle_correction(
+    user_message: str,
+    classification: dict,
+    current_store: dict,
+    conversation_history: list[dict],
+    session: Session,
+    session_id: str,
+    client: OpenAI
+) -> Optional[dict]:
+    """
+    Handle a correction message from the user.
+
+    Determines what field is being corrected and updates it.
+    """
+    import re
+
+    # Try to get correction details from classification
+    correction_target = classification.get("correction_target")
+    new_value = classification.get("new_value")
+
+    # If we don't have the target, try to infer from conversation
+    if not correction_target:
+        # Look at recent history to find what was likely wrong
+        for turn in reversed(conversation_history[-4:]):
+            if turn.get("role") == "assistant":
+                # Check if assistant mentioned a value that user might be correcting
+                pass
+
+        # Try to extract field from the message itself
+        message_lower = user_message.lower()
+
+        # Common patterns: "my income is actually X", "I meant my savings are X"
+        field_patterns = [
+            (r"(income|salary|wage).*?(\$?\d+[k]?)", "monthly_income"),
+            (r"(savings?|saved).*?(\$?\d+[k]?)", "savings"),
+            (r"(expense|spend).*?(\$?\d+[k]?)", "monthly_expenses"),
+            (r"(emergency|rainy).*?(\$?\d+[k]?)", "emergency_fund"),
+            (r"(super|superannuation).*?(\$?\d+[k]?)", "superannuation"),
+            (r"(\d+)\s*(?:years?\s*)?old", "age"),
+        ]
+
+        for pattern, field in field_patterns:
+            match = re.search(pattern, message_lower)
+            if match:
+                correction_target = field
+                # Extract the numeric value
+                if field == "age":
+                    new_value = int(match.group(1))
+                else:
+                    value_str = match.group(2) if len(match.groups()) > 1 else match.group(1)
+                    new_value = _parse_money_value(value_str)
+                break
+
+    if not correction_target:
+        # Fall back to LLM extraction with correction context
+        return None  # Let normal extraction handle it
+
+    # Get old value
+    old_value = None
+    if correction_target == "monthly_income":
+        old_value = current_store.get("monthly_income")
+    elif correction_target == "savings":
+        old_value = current_store.get("savings")
+    elif correction_target == "monthly_expenses":
+        old_value = current_store.get("monthly_expenses")
+    elif correction_target == "emergency_fund":
+        old_value = current_store.get("emergency_fund")
+    elif correction_target == "age":
+        old_value = current_store.get("age")
+
+    # Parse new value if string
+    if isinstance(new_value, str):
+        new_value = _parse_money_value(new_value)
+
+    if new_value is not None:
+        # Record the correction
+        record_correction(session, session_id, correction_target, old_value, new_value)
+
+        # Update the store
+        _update_user_store(session, session_id, {correction_target: new_value})
+
+        logger.info(f"[TOOL:extract_facts] Corrected {correction_target}: {old_value} -> {new_value}")
+
+        return {
+            "extracted_facts": {correction_target: new_value},
+            "message_type": "correction",
+            "correction": {
+                "field": correction_target,
+                "old_value": old_value,
+                "new_value": new_value
+            },
+            "message": f"Corrected {correction_target} from {old_value} to {new_value}. Profile updated.",
+            "do_not_ask": [correction_target]
+        }
+
+    return None
+
+
+def _parse_money_value(value_str: str) -> Optional[float]:
+    """Parse a money string like '10k', '$50,000', '5000' into a number."""
+    if not value_str:
+        return None
+
+    import re
+
+    # Remove $ and commas
+    cleaned = re.sub(r'[$,\s]', '', str(value_str).lower())
+
+    # Handle 'k' suffix
+    if cleaned.endswith('k'):
+        try:
+            return float(cleaned[:-1]) * 1000
+        except ValueError:
+            return None
+
+    # Handle 'm' suffix (millions)
+    if cleaned.endswith('m'):
+        try:
+            return float(cleaned[:-1]) * 1000000
+        except ValueError:
+            return None
+
+    # Plain number
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+# =============================================================================
 # FINANCIAL FACTS EXTRACTOR (Sync)
 # =============================================================================
 
@@ -896,17 +1142,22 @@ def sync_extract_financial_facts(
     db_url: str,
     session_id: str
 ) -> dict:
-    """Extract financial facts from user's message (sync version)."""
+    """Extract financial facts from user's message (sync version).
+
+    This function now includes:
+    - Message classification (detect corrections, skips, confirmations)
+    - Conversation history for context
+    - Savings/emergency fund linkage detection
+    - Field state tracking
+    """
     logger.info(f"[TOOL:extract_facts] Called for session: {session_id}")
     logger.info(f"[TOOL:extract_facts] User message: {user_message[:100]}")
 
     # Use stored last question (set by advice_service after each response)
-    # This is more reliable than what the agent passes, as it's extracted from the actual response sent to UI
     stored_last_question = get_last_agent_question(session_id)
     effective_last_question = stored_last_question or agent_last_question
 
     logger.info(f"[TOOL:extract_facts] Stored last question: {stored_last_question[:100] if stored_last_question else 'None'}")
-    logger.info(f"[TOOL:extract_facts] Agent-provided last question: {agent_last_question[:100] if agent_last_question else 'None'}")
     logger.info(f"[TOOL:extract_facts] Using: {effective_last_question[:100] if effective_last_question else 'None'}")
 
     client = OpenAI()
@@ -915,7 +1166,111 @@ def sync_extract_financial_facts(
     try:
         current_store = _get_user_store(session, session_id)
 
-        # Check for pending probe
+        # Get conversation history for context
+        conversation_history = get_conversation_history(session, session_id, last_n=6)
+        history_text = format_history_for_prompt(conversation_history)
+
+        # Add current user message to conversation history
+        add_conversation_turn(session, session_id, "user", user_message)
+
+        # === STEP 1: Classify the message ===
+        classification = classify_message(
+            user_message=user_message,
+            last_agent_question=effective_last_question,
+            conversation_history=conversation_history,
+            use_llm=True
+        )
+        message_type = classification["message_type"]
+        logger.info(f"[TOOL:extract_facts] Message classified as: {message_type.value} (confidence: {classification.get('confidence', 0):.2f})")
+
+        # === STEP 2: Handle special message types ===
+
+        # Handle SKIP - user doesn't know or wants to skip
+        if message_type == MessageType.SKIP:
+            # Determine which field they're skipping based on last question
+            skipped_field = _determine_field_from_question(effective_last_question)
+            if skipped_field:
+                update_field_state(session, session_id, skipped_field, FieldState.NOT_PROVIDED)
+                logger.info(f"[TOOL:extract_facts] User skipped/doesn't know: {skipped_field}")
+                return {
+                    "extracted_facts": {},
+                    "message_type": message_type.value,
+                    "skipped_field": skipped_field,
+                    "message": f"User doesn't know {skipped_field}. DO NOT ask about {skipped_field} again. Move to the next missing field.",
+                    "do_not_ask": [skipped_field]
+                }
+
+        # Handle CORRECTION - user is fixing a previous answer
+        if message_type == MessageType.CORRECTION:
+            correction_result = _handle_correction(
+                user_message=user_message,
+                classification=classification,
+                current_store=current_store,
+                conversation_history=conversation_history,
+                session=session,
+                session_id=session_id,
+                client=client
+            )
+            if correction_result:
+                return correction_result
+
+        # Handle CONFIRMATION / DENIAL for probes
+        if message_type in [MessageType.CONFIRMATION, MessageType.DENIAL]:
+            # Check if responding to a pending probe
+            pending_probe = current_store.get("pending_probe")
+            if pending_probe:
+                if message_type == MessageType.CONFIRMATION:
+                    discovered_goals = current_store.get("discovered_goals", [])
+                    discovered_goals.append({
+                        "goal": pending_probe["potential_goal"],
+                        "status": "confirmed",
+                        "priority": pending_probe["priority"],
+                    })
+                    _update_user_store(session, session_id, {"discovered_goals": discovered_goals, "pending_probe": None})
+                    return {
+                        "extracted_facts": {},
+                        "goal_confirmed": True,
+                        "confirmed_goal": pending_probe["potential_goal"],
+                        "message_type": message_type.value,
+                        "message": f"Goal confirmed: {pending_probe['potential_goal']}"
+                    }
+                else:  # DENIAL
+                    if pending_probe.get("track_if_denied"):
+                        critical_concerns = current_store.get("critical_concerns", [])
+                        critical_concerns.append({
+                            "concern": pending_probe["potential_goal"],
+                            "details": pending_probe.get("concern_details", {}),
+                            "user_response": user_message,
+                        })
+                        _update_user_store(session, session_id, {"critical_concerns": critical_concerns, "pending_probe": None})
+                    else:
+                        _update_user_store(session, session_id, {"pending_probe": None})
+                    return {
+                        "extracted_facts": {},
+                        "goal_denied": True,
+                        "denied_goal": pending_probe["potential_goal"],
+                        "message_type": message_type.value,
+                        "message": f"Goal denied: {pending_probe['potential_goal']}"
+                    }
+
+        # Handle HYPOTHETICAL - don't store as real data
+        if message_type == MessageType.HYPOTHETICAL:
+            return {
+                "extracted_facts": {},
+                "message_type": message_type.value,
+                "is_hypothetical": True,
+                "message": "User is exploring a hypothetical scenario. Do NOT store this as actual profile data. Answer the hypothetical question without updating the profile."
+            }
+
+        # === STEP 3: Check for savings/emergency fund linkage ===
+        if detect_savings_emergency_link(user_message):
+            link_savings_emergency_fund(session, session_id, True)
+            # If we already have savings, mark emergency_fund as resolved
+            if current_store.get("savings"):
+                update_field_state(session, session_id, "emergency_fund", FieldState.ANSWERED, current_store["savings"])
+                logger.info(f"[TOOL:extract_facts] Linked savings and emergency fund for {session_id}")
+
+        # Check for pending probe (legacy flow for non-classified messages)
         pending_probe = current_store.get("pending_probe")
         if pending_probe:
             goal_response = _analyze_goal_response_sync(user_message, pending_probe, client)
@@ -956,14 +1311,52 @@ def sync_extract_financial_facts(
                         "message": f"Goal denied: {pending_probe['potential_goal']}"
                     }
 
-        # Extract financial facts
-        context_line = f"\nAgent's last question: \"{effective_last_question}\"\n" if effective_last_question else ""
+        # Extract financial facts with conversation history for context
+        context_line = f"Agent's last question: \"{effective_last_question}\"\n" if effective_last_question else ""
+
+        # Include conversation history for better context
+        history_section = ""
+        if history_text:
+            history_section = f"""
+RECENT CONVERSATION HISTORY (for context):
+{history_text}
+---
+"""
+
+        # Build a cleaner profile summary (exclude large/irrelevant fields)
+        profile_summary = {
+            "age": current_store.get("age"),
+            "monthly_income": current_store.get("monthly_income"),
+            "monthly_expenses": current_store.get("monthly_expenses"),
+            "savings": current_store.get("savings"),
+            "emergency_fund": current_store.get("emergency_fund"),
+            "savings_emergency_linked": current_store.get("savings_emergency_linked"),
+            "marital_status": current_store.get("marital_status"),
+            "dependents": current_store.get("dependents"),
+            "debts": current_store.get("debts", []),
+            "job_stability": current_store.get("job_stability"),
+            "field_states": current_store.get("field_states", {}),
+        }
 
         prompt = f"""Extract financial facts from the user's message.
+{history_section}
+CURRENT PROFILE (what we already know):
+{json.dumps(profile_summary, indent=2)}
 
-Current profile: {json.dumps(current_store, indent=2)}
 {context_line}
-User's response: "{user_message}"
+CURRENT USER MESSAGE: "{user_message}"
+
+CRITICAL INSTRUCTION - UNDERSTAND CORRECTIONS:
+If user says "I meant X", "no I said X", "actually X", or is correcting a previous answer:
+- Set "is_correction": true
+- Set "correction_field": the field being corrected
+- Set "correction_new_value": the corrected value
+- Look at the conversation history to understand what they're correcting
+
+CRITICAL INSTRUCTION - SAVINGS AND EMERGENCY FUND:
+If user says their savings IS their emergency fund (e.g., "that's my emergency fund", "same thing", "it covers emergencies"):
+- Set "savings_is_emergency_fund": true
+- Do NOT ask separately about emergency fund
 
 Extract any of these fields if mentioned:
 - age (integer)
@@ -1121,6 +1514,27 @@ If nothing to extract, return: {{}}"""
 
         logger.info(f"[TOOL:extract_facts] Extracted: {json.dumps(extracted_facts, default=str)[:500]}")
 
+        # === Handle special extraction flags ===
+
+        # Handle savings_is_emergency_fund flag
+        savings_is_ef = extracted_facts.pop("savings_is_emergency_fund", None)
+        if savings_is_ef:
+            link_savings_emergency_fund(session, session_id, True)
+            update_field_state(session, session_id, "emergency_fund", FieldState.ANSWERED)
+            logger.info(f"[TOOL:extract_facts] Savings and emergency fund linked for {session_id}")
+
+        # Handle correction detected by LLM
+        is_correction = extracted_facts.pop("is_correction", None)
+        correction_field = extracted_facts.pop("correction_field", None)
+        correction_new_value = extracted_facts.pop("correction_new_value", None)
+        if is_correction and correction_field and correction_new_value is not None:
+            old_value = current_store.get(correction_field)
+            record_correction(session, session_id, correction_field, old_value, correction_new_value)
+            # Add to extracted_facts so it gets updated
+            if correction_field not in extracted_facts:
+                extracted_facts[correction_field] = correction_new_value
+            logger.info(f"[TOOL:extract_facts] LLM detected correction: {correction_field} -> {correction_new_value}")
+
         # Handle user_goals
         user_goals = extracted_facts.pop("user_goals", [])
         if user_goals:
@@ -1155,6 +1569,7 @@ If nothing to extract, return: {{}}"""
         no_other_debts = extracted_facts.pop("no_other_debts", None)
         if no_other_debts is True:
             set_debts_confirmed(session_id, True, db_url)
+            update_field_state(session, session_id, "debts", FieldState.ANSWERED)
             logger.info(f"[TOOL:extract_facts] User confirmed no other debts for session: {session_id}")
 
         # Update store with extracted facts
@@ -1163,6 +1578,13 @@ If nothing to extract, return: {{}}"""
         if extracted_facts:
             _update_user_store(session, session_id, extracted_facts)
             updated_store = _get_user_store(session, session_id)
+
+            # Update field states for extracted fields
+            for field_name, field_value in extracted_facts.items():
+                if field_value == "not_provided":
+                    update_field_state(session, session_id, field_name, FieldState.NOT_PROVIDED)
+                else:
+                    update_field_state(session, session_id, field_name, FieldState.ANSWERED, field_value)
 
             # Check for probing triggers
             for field_name, field_value in extracted_facts.items():
@@ -1265,11 +1687,38 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
             required_fields.extend(GOAL_SPECIFIC_FIELDS[goal_classification])
         required_fields = list(set(required_fields))
 
+        # Get field states to check for skipped/not_provided fields
+        field_states = current_store.get("field_states", {})
+
+        # Check if savings and emergency_fund are linked
+        savings_emergency_linked = current_store.get("savings_emergency_linked", False)
+        if savings_emergency_linked and "emergency_fund" in required_fields:
+            # If linked, emergency_fund is effectively answered (same as savings)
+            # We'll handle this below
+
         # Check populated fields
         populated_fields = []
+        resolved_fields = []  # Fields that are resolved but may not have values (skipped, not_provided)
         super_incomplete = None  # Track superannuation partial completion
 
         for field in required_fields:
+            # First, check field_states - if marked as skipped/not_provided, consider resolved
+            field_state = field_states.get(field, {})
+            if isinstance(field_state, dict):
+                state = field_state.get("state")
+                if state in [FieldState.SKIPPED, FieldState.NOT_PROVIDED, FieldState.ANSWERED, FieldState.CORRECTED]:
+                    resolved_fields.append(field)
+                    if state in [FieldState.ANSWERED, FieldState.CORRECTED]:
+                        populated_fields.append(field)
+                    continue  # Don't re-check this field
+
+            # Special handling for emergency_fund when linked to savings
+            if field == "emergency_fund" and savings_emergency_linked:
+                if current_store.get("savings") is not None:
+                    populated_fields.append(field)
+                    resolved_fields.append(field)
+                    continue
+
             value = current_store.get(field)
             if value is not None:
                 # Special handling for superannuation - track partial completion
@@ -1403,21 +1852,32 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
             populated_fields.append("debts")
         # else: debts not provided yet, stays in missing_fields
 
-        missing_fields = list(set(required_fields) - set(populated_fields))
+        # Missing fields = required fields - (populated + resolved)
+        # resolved_fields includes fields user skipped or said "I don't know"
+        all_resolved = set(populated_fields) | set(resolved_fields)
+        missing_fields = list(set(required_fields) - all_resolved)
 
         _update_user_store(session, session_id, {
             "required_fields": required_fields,
             "missing_fields": missing_fields
         })
 
-        # Build response
+        # Build response with info about skipped fields
+        skipped_fields = [f for f in resolved_fields if f not in populated_fields]
+
         result = {
             "goal_type": goal_classification,
             "required_fields": required_fields,
             "missing_fields": missing_fields,
             "populated_fields": populated_fields,
+            "resolved_fields": resolved_fields,
+            "skipped_fields": skipped_fields,  # Fields user skipped/doesn't know
+            "savings_emergency_linked": savings_emergency_linked,
             "message": f"Missing: {len(missing_fields)} fields"
         }
+
+        if skipped_fields:
+            result["message"] += f". User skipped: {', '.join(skipped_fields)} - DO NOT ask about these again."
 
         # Add super_incomplete if user has partial super data
         # This tells the agent to suggest document upload instead of re-asking

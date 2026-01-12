@@ -43,7 +43,8 @@ from app.core.prompts import (
     DOCUMENT_CONTINUATION_NO_DATA,
     DOCUMENT_REJECTION_CONTINUATION,
 )
-from app.tools.sync_tools import get_pending_visualizations, set_last_agent_question
+from app.tools.sync_tools import get_pending_visualizations, set_last_agent_question, _get_sync_session
+from app.tools.conversation_manager import add_conversation_turn
 import re
 
 # Configure logger
@@ -687,6 +688,14 @@ class AdviceService:
 
                 # Update conversation context
                 self._conversation_contexts[username] += f"Vecta: {user_facing_response}\n"
+
+                # Store agent response in persistent conversation history
+                try:
+                    sync_session = _get_sync_session(settings.database_url)
+                    add_conversation_turn(sync_session, username, "assistant", user_facing_response)
+                    sync_session.close()
+                except Exception as e:
+                    logger.warning(f"[TOOL_AGENT] Failed to store conversation history: {e}")
 
                 # Get updated profile from database
                 profile_repo = FinancialProfileRepository(session)

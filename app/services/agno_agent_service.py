@@ -125,6 +125,27 @@ class AgnoAgentService:
             if store.get("job_stability"):
                 parts.append(f"Job stability: {store['job_stability']}")
 
+            # Savings/Emergency fund linkage
+            if store.get("savings_emergency_linked"):
+                parts.append("NOTE: User's savings IS their emergency fund (same pool of money)")
+
+            # Field states - track what user has skipped or doesn't know
+            field_states = store.get("field_states", {})
+            skipped_fields = []
+            not_provided_fields = []
+            for field_name, state_info in field_states.items():
+                if isinstance(state_info, dict):
+                    state = state_info.get("state")
+                    if state == "skipped":
+                        skipped_fields.append(field_name)
+                    elif state == "not_provided":
+                        not_provided_fields.append(field_name)
+
+            if skipped_fields:
+                parts.append(f"SKIPPED (user will answer later): {', '.join(skipped_fields)}")
+            if not_provided_fields:
+                parts.append(f"USER DOESN'T KNOW: {', '.join(not_provided_fields)}")
+
             if not parts:
                 return ""
 
@@ -448,9 +469,20 @@ Look at the profile data above. DO NOT ask about any field that already has a va
 - Monthly income shows value → DON'T ask about income
 - User JUST told you something → DON'T ask about it again
 
+## CRITICAL: RESPECT USER'S SKIPPED/UNKNOWN FIELDS
+- Fields marked as "SKIPPED" → User will tell you later. DON'T ask now.
+- Fields marked as "USER DOESN'T KNOW" → User already said they don't know. DON'T ask again.
+- If savings_emergency_linked is true → DON'T ask about emergency fund separately.
+
+## HANDLING USER CORRECTIONS
+If user says "I meant...", "actually...", "no I said..." they are CORRECTING a previous answer:
+- Acknowledge the correction
+- Update your understanding
+- DON'T treat it as a new piece of information for the current question
+
 Ask only about fields that are MISSING from the profile above.
 Use stored data for 'what if' scenarios (e.g., loan projections).
-Violating this rule frustrates users!"""
+Violating these rules frustrates users!"""
 
         # Create agent with PostgreSQL storage for scalability
         agent = Agent(

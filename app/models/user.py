@@ -85,6 +85,12 @@ class User(Base):
     risk_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     debts_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
 
+    # Conversation tracking fields
+    conversation_history: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Recent turns for context
+    field_states: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Track field completion states
+    savings_emergency_linked: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    last_correction: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Track recent corrections
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -169,6 +175,11 @@ class User(Base):
             "pending_probe": self.pending_probe,
             "risk_profile": self.risk_profile,
             "debts_confirmed": self.debts_confirmed,
+            # Conversation tracking
+            "conversation_history": self.conversation_history,
+            "field_states": self.field_states,
+            "savings_emergency_linked": self.savings_emergency_linked,
+            "last_correction": self.last_correction,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -218,6 +229,11 @@ class User(Base):
             "pending_probe": self.pending_probe,
             "risk_profile": self.risk_profile,
             "debts_confirmed": self.debts_confirmed or False,
+            # Conversation tracking
+            "conversation_history": self.conversation_history or [],
+            "field_states": self.field_states or {},
+            "savings_emergency_linked": self.savings_emergency_linked or False,
+            "last_correction": self.last_correction,
             # Related entities
             "goals": [g.to_dict() for g in self.goals] if self.goals else [],
             "assets": [a.to_dict() for a in self.assets] if self.assets else [],
