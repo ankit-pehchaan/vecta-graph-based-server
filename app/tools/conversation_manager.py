@@ -42,6 +42,9 @@ def add_conversation_turn(
     """
     Add a conversation turn to the history.
 
+    Uses SELECT ... FOR UPDATE to prevent race conditions when multiple
+    concurrent requests try to update the same user's conversation history.
+
     Args:
         session: Database session
         email: User's email (session_id)
@@ -49,7 +52,11 @@ def add_conversation_turn(
         content: The message content
         extracted_data: Any data extracted from this turn (for user messages)
     """
-    user = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    # Use FOR UPDATE to lock the row and prevent race conditions
+    # This ensures read-modify-write is atomic
+    user = session.execute(
+        select(User).where(User.email == email).with_for_update()
+    ).scalar_one_or_none()
     if not user:
         logger.warning(f"[CONV_MANAGER] User not found: {email}")
         return
@@ -124,6 +131,8 @@ def update_field_state(
     """
     Update the state of a profile field.
 
+    Uses SELECT ... FOR UPDATE to prevent race conditions.
+
     Args:
         session: Database session
         email: User's email
@@ -131,7 +140,9 @@ def update_field_state(
         state: One of FieldState values
         value: The value if state is ANSWERED or CORRECTED
     """
-    user = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    user = session.execute(
+        select(User).where(User.email == email).with_for_update()
+    ).scalar_one_or_none()
     if not user:
         return
 
@@ -206,6 +217,8 @@ def record_correction(
     """
     Record a correction made by the user.
 
+    Uses SELECT ... FOR UPDATE to prevent race conditions.
+
     Args:
         session: Database session
         email: User's email
@@ -213,7 +226,9 @@ def record_correction(
         old_value: Previous value
         new_value: Corrected value
     """
-    user = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    user = session.execute(
+        select(User).where(User.email == email).with_for_update()
+    ).scalar_one_or_none()
     if not user:
         return
 

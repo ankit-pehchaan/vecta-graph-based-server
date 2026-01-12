@@ -89,6 +89,20 @@ CONFIRMATION_PATTERNS = [
     r"^definitely\b",
 ]
 
+# Patterns that indicate confirmation even in longer messages
+STRONG_CONFIRMATION_PATTERNS = [
+    r"^yes\s*,",  # "yes, ..."
+    r"^yeah\s*,",  # "yeah, ..."
+    r"^yep\s*,",  # "yep, ..."
+    r"^definitely\b",
+    r"^absolutely\b",
+    r"\bi\s+should\s+(plan|do|start|think\s+about)\b",  # "I should plan for this"
+    r"\bi\s+want\s+to\b.*\b(plan|save|invest|work\s+on)\b",  # "I want to plan for..."
+    r"\bthat'?s?\s+(something|a\s+goal)\s+i\b",  # "that's something I..."
+    r"\bi'?m\s+interested\s+in\b",  # "I'm interested in..."
+    r"\bplanning\s+for\s+(this|that|it)\b",  # "planning for this"
+]
+
 DENIAL_PATTERNS = [
     r"^no\b(?!\s+\d)",  # "no" but not "no, 5000"
     r"^nope\b",
@@ -146,11 +160,17 @@ def quick_classify(message: str) -> Optional[MessageType]:
             if re.search(pattern, message_lower, re.IGNORECASE):
                 return MessageType.ACKNOWLEDGMENT
 
-    # Check for confirmations (short messages)
+    # Check for confirmations (short messages - strict patterns)
     if len(message_lower.split()) <= 5:
         for pattern in CONFIRMATION_PATTERNS:
             if re.search(pattern, message_lower, re.IGNORECASE):
                 return MessageType.CONFIRMATION
+
+    # Check for confirmations (longer messages - strong patterns)
+    # These patterns indicate confirmation even in complex sentences
+    for pattern in STRONG_CONFIRMATION_PATTERNS:
+        if re.search(pattern, message_lower, re.IGNORECASE):
+            return MessageType.CONFIRMATION
 
     # Check for denials (short messages)
     if len(message_lower.split()) <= 5:

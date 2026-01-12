@@ -1462,9 +1462,11 @@ Extract any of these fields if mentioned:
   * Examples: "5 years", "house in 10 years, car in 2 years", "retirement in 20 years"
 - target_amount (integer: target amount for goal if mentioned)
   * If user says "I don't know" or "not sure" → "not_provided"
-- user_goals (list of strings: ANY goals the user mentions - buying house, car, vacation, retirement, etc.)
-  * Extract EVERY goal mentioned, no matter how small
-  * Examples: "buy a house", "get a new car", "go on vacation", "retire early", "pay off debt"
+- user_goals (list of strings: ANY goals the user mentions or confirms)
+  * Extract EVERY goal mentioned or confirmed, no matter how small
+  * If agent asked about a goal (education, retirement, insurance, etc.) and user says "yes", "I should plan for this", "that's something I want" → extract that goal
+  * Examples: "buy a house", "get a new car", "go on vacation", "retire early", "pay off debt", "education planning", "save for kids' education", "get life insurance", "build emergency fund"
+  * IMPORTANT: If the agent asked about a specific goal and user confirms they want it, extract that goal
 
 CRITICAL CONTEXT RULES:
 1. Use the agent's last question to understand what the user is answering
@@ -1472,6 +1474,10 @@ CRITICAL CONTEXT RULES:
 3. If agent asked about expenses and user says "20k" → monthly_expenses: 20000
 4. If agent asked about emergency fund and user says "3 months" → calculate based on monthly_expenses
 5. Convert Australian salary formats: "80k" = 80000 annual → monthly_income: 6666 (divide by 12)
+6. GOAL CONFIRMATION: If agent asked about a goal (e.g., "thinking about education costs?", "have you thought about life insurance?") and user confirms ("yes", "I should", "definitely", "that's a priority") → add that goal to user_goals
+   Examples:
+   - Agent: "Are you starting to think about their education costs?" + User: "yes, I should plan for this" → user_goals: ["education planning"]
+   - Agent: "Have you thought about life insurance?" + User: "definitely something I need" → user_goals: ["get life insurance"]
 
 IMPORTANT:
 - Only extract facts explicitly mentioned or clearly implied

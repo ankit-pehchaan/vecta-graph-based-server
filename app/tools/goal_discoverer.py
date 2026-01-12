@@ -134,9 +134,13 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
                 "denial_note": None
             }
 
-    # 5. MARRIED WITHOUT KIDS - FAMILY PLANNING (MEDIUM PRIORITY)
+    # 5. IN RELATIONSHIP WITHOUT KIDS - FAMILY PLANNING (MEDIUM PRIORITY)
+    # 6. IN RELATIONSHIP WITH KIDS - EDUCATION PLANNING (HIGH PRIORITY)
     if field_name == "dependents":
-        if marital_status == "married" and (field_value == 0 or field_value is None):
+        in_relationship = marital_status in ["married", "partnered", "de facto", "de_facto"]
+
+        # Family planning - no kids yet
+        if in_relationship and (field_value == 0 or field_value is None):
             if age and age <= 40:  # Only ask if reasonable age for kids
                 return {
                     "should_probe": True,
@@ -147,8 +151,8 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
                     "denial_note": None
                 }
 
-        # 6. MARRIED WITH KIDS - EDUCATION PLANNING (HIGH PRIORITY)
-        if marital_status == "married" and field_value and field_value > 0:
+        # Education planning - has kids
+        if in_relationship and field_value and field_value > 0:
             # Check if they've mentioned education planning in investments
             investments = user_context.get("investments", [])
             has_education_investment = any(
@@ -212,6 +216,117 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
                     "denial_note": None
                 }
 
+    # 9. LIFE INSURANCE WITH MORTGAGE - HIGH PRIORITY
+    if field_name == "debts" and isinstance(field_value, list):
+        has_mortgage = any(
+            debt.get("type", "").lower() in ["home_loan", "mortgage", "housing_loan"]
+            for debt in field_value if isinstance(debt, dict) and debt.get("type") != "none"
+        )
+
+        if has_mortgage:
+            # Check if user has life insurance
+            life_insurance = user_context.get("life_insurance")
+            has_life_insurance = life_insurance and isinstance(life_insurance, dict) and life_insurance.get("coverage_amount")
+
+            if not has_life_insurance:
+                mortgage_amount = 0
+                for debt in field_value:
+                    if debt.get("type", "").lower() in ["home_loan", "mortgage", "housing_loan"]:
+                        mortgage_amount = debt.get("amount", 0)
+                        break
+
+                return {
+                    "should_probe": True,
+                    "probe_question": f"With a mortgage of ${mortgage_amount:,.0f}, do you have life insurance to cover it if something happens to you?",
+                    "potential_goal": "get_mortgage_protection",
+                    "priority": "high",
+                    "track_if_denied": True,
+                    "denial_note": f"User has ${mortgage_amount:,.0f} mortgage but no life insurance - family could lose home",
+                    "concern_details": {
+                        "concern": "no_life_insurance_with_mortgage",
+                        "mortgage_amount": mortgage_amount,
+                        "recommended_coverage": mortgage_amount
+                    }
+                }
+
+    # 10. PRIVATE HEALTH INSURANCE - MEDIUM PRIORITY (Australian context)
+    if field_name == "private_health_insurance":
+        if not field_value or field_value is False or (isinstance(field_value, dict) and not field_value.get("provider")):
+            # In Australia, Medicare Levy Surcharge applies if income > $93,000 and no PHI
+            if monthly_income and monthly_income * 12 > 93000:
+                annual_income = monthly_income * 12
+                # MLS is 1-1.5% depending on income
+                mls_rate = 0.01 if annual_income < 108000 else (0.0125 if annual_income < 144000 else 0.015)
+                potential_mls = annual_income * mls_rate
+
+                return {
+                    "should_probe": True,
+                    "probe_question": f"With your income, you might be paying around ${potential_mls:,.0f}/year in Medicare Levy Surcharge without private health insurance. Have you considered getting PHI?",
+                    "potential_goal": "get_private_health_insurance",
+                    "priority": "medium",
+                    "track_if_denied": False,
+                    "denial_note": None
+                }
+
+            # Also probe for older users (lifetime health cover loading)
+            if age and age >= 31:
+                loading_years = age - 30
+                loading_percent = min(loading_years * 2, 70)  # 2% per year after 30, max 70%
+
+                return {
+                    "should_probe": True,
+                    "probe_question": f"At {age}, if you get private health insurance later, you'd pay {loading_percent}% more in premiums (Lifetime Health Cover loading). Is private health insurance something you've considered?",
+                    "potential_goal": "get_private_health_insurance",
+                    "priority": "medium",
+                    "track_if_denied": False,
+                    "denial_note": None
+                }
+
+    # 11. INCOME PROTECTION INSURANCE - HIGH PRIORITY FOR HIGH EARNERS
+    if field_name == "monthly_income":
+        if field_value and field_value > 8000:  # > $8k/month ($96k/year)
+            # Check if they have income protection
+            insurance = user_context.get("insurance", [])
+            has_income_protection = False
+            if isinstance(insurance, list):
+                has_income_protection = any(
+                    ins.get("type", "").lower() in ["income_protection", "income protection", "tpd", "total permanent disability"]
+                    for ins in insurance if isinstance(ins, dict)
+                )
+
+            if not has_income_protection:
+                annual_income = field_value * 12
+                return {
+                    "should_probe": True,
+                    "probe_question": f"With ${annual_income:,.0f}/year income, have you thought about income protection insurance in case you can't work due to illness or injury?",
+                    "potential_goal": "get_income_protection",
+                    "priority": "high",
+                    "track_if_denied": True,
+                    "denial_note": f"User earns ${annual_income:,.0f}/year but has no income protection insurance",
+                    "concern_details": {
+                        "concern": "no_income_protection",
+                        "annual_income": annual_income,
+                        "monthly_income": field_value
+                    }
+                }
+
+    # 12. LIFE INSURANCE FOR SPOUSE DEPENDENCY - HIGH PRIORITY
+    if field_name == "marital_status":
+        if field_value in ["married", "de facto", "partnered"]:
+            # Check if spouse might be financially dependent
+            life_insurance = user_context.get("life_insurance")
+            has_life_insurance = life_insurance and isinstance(life_insurance, dict) and life_insurance.get("coverage_amount")
+
+            if not has_life_insurance and monthly_income and monthly_income > 5000:
+                return {
+                    "should_probe": True,
+                    "probe_question": "As the main earner in a relationship, do you have life insurance to protect your partner financially?",
+                    "potential_goal": "get_life_insurance",
+                    "priority": "high",
+                    "track_if_denied": False,  # Don't track if denied - they may have other arrangements
+                    "denial_note": None
+                }
+
     return no_probe
 
 
@@ -223,6 +338,13 @@ def categorize_goal_priority(goal_type: str, user_context: dict) -> str:
     """
 
     dependents = user_context.get("dependents", 0)
+    has_mortgage = False
+    debts = user_context.get("debts", [])
+    if isinstance(debts, list):
+        has_mortgage = any(
+            debt.get("type", "").lower() in ["home_loan", "mortgage", "housing_loan"]
+            for debt in debts if isinstance(debt, dict)
+        )
 
     # Critical priorities (must address first)
     if goal_type in ["clear_high_interest_debt", "build_emergency_fund"]:
@@ -235,9 +357,120 @@ def categorize_goal_priority(goal_type: str, user_context: dict) -> str:
     if goal_type in ["boost_emergency_fund", "boost_superannuation"]:
         return "high"
 
+    # Insurance-related high priorities
+    if goal_type == "get_mortgage_protection" and has_mortgage:
+        return "high"
+
+    if goal_type == "get_income_protection":
+        return "high"
+
+    if goal_type == "get_life_insurance":  # Even without dependents, still high if married
+        return "high"
+
     # Medium priorities (nice to have)
-    if goal_type in ["marriage_planning", "reduce_expenses"]:
+    if goal_type in ["marriage_planning", "reduce_expenses", "get_private_health_insurance"]:
         return "medium"
 
     # Low priorities (can wait)
     return "low"
+
+
+# Insurance-specific helper functions
+def check_insurance_gaps(user_context: dict) -> list[dict]:
+    """
+    Analyze user context to identify insurance gaps.
+
+    Returns a list of insurance recommendations with priority.
+    """
+    gaps = []
+
+    age = user_context.get("age")
+    monthly_income = user_context.get("monthly_income")
+    annual_income = monthly_income * 12 if monthly_income else 0
+    dependents = user_context.get("dependents", 0)
+    marital_status = user_context.get("marital_status")
+
+    # Get existing insurance
+    life_insurance = user_context.get("life_insurance")
+    has_life_insurance = life_insurance and isinstance(life_insurance, dict) and life_insurance.get("coverage_amount")
+
+    health_insurance = user_context.get("private_health_insurance")
+    has_health_insurance = health_insurance and isinstance(health_insurance, dict) and health_insurance.get("provider")
+
+    insurance_list = user_context.get("insurance", [])
+    has_income_protection = False
+    if isinstance(insurance_list, list):
+        has_income_protection = any(
+            ins.get("type", "").lower() in ["income_protection", "income protection", "tpd"]
+            for ins in insurance_list if isinstance(ins, dict)
+        )
+
+    # Check for mortgage
+    debts = user_context.get("debts", [])
+    mortgage_amount = 0
+    if isinstance(debts, list):
+        for debt in debts:
+            if isinstance(debt, dict) and debt.get("type", "").lower() in ["home_loan", "mortgage", "housing_loan"]:
+                mortgage_amount = debt.get("amount", 0)
+                break
+
+    # 1. Life Insurance Gap
+    if not has_life_insurance:
+        if dependents and dependents > 0:
+            gaps.append({
+                "type": "life_insurance",
+                "priority": "critical",
+                "reason": f"You have {dependents} dependent(s) relying on your income",
+                "recommended_coverage": annual_income * 10 if annual_income else 1000000,
+                "action": "Consider term life insurance to protect your family"
+            })
+        elif mortgage_amount > 0:
+            gaps.append({
+                "type": "life_insurance",
+                "priority": "high",
+                "reason": f"You have a ${mortgage_amount:,.0f} mortgage",
+                "recommended_coverage": mortgage_amount,
+                "action": "Consider life insurance to cover your mortgage"
+            })
+        elif marital_status in ["married", "de facto", "partnered"] and annual_income > 60000:
+            gaps.append({
+                "type": "life_insurance",
+                "priority": "high",
+                "reason": "Your partner may depend on your income",
+                "recommended_coverage": annual_income * 5,
+                "action": "Consider life insurance to protect your partner"
+            })
+
+    # 2. Income Protection Gap
+    if not has_income_protection and annual_income > 80000:
+        gaps.append({
+            "type": "income_protection",
+            "priority": "high",
+            "reason": f"Your ${annual_income:,.0f}/year income would be at risk if you couldn't work",
+            "recommended_coverage": monthly_income * 0.75 if monthly_income else 5000,  # 75% of income
+            "action": "Consider income protection insurance (often available through super)"
+        })
+
+    # 3. Private Health Insurance Gap (Australian context)
+    if not has_health_insurance:
+        if annual_income > 93000:
+            mls_rate = 0.01 if annual_income < 108000 else (0.0125 if annual_income < 144000 else 0.015)
+            potential_mls = annual_income * mls_rate
+            gaps.append({
+                "type": "private_health_insurance",
+                "priority": "medium",
+                "reason": f"You may be paying ${potential_mls:,.0f}/year in Medicare Levy Surcharge",
+                "recommended_coverage": "Hospital cover at minimum",
+                "action": "Compare PHI costs vs Medicare Levy Surcharge"
+            })
+        elif age and age >= 31:
+            loading_percent = min((age - 30) * 2, 70)
+            gaps.append({
+                "type": "private_health_insurance",
+                "priority": "medium",
+                "reason": f"Lifetime Health Cover loading of {loading_percent}% applies",
+                "recommended_coverage": "Hospital cover to avoid loading",
+                "action": "Consider getting PHI before loading increases further"
+            })
+
+    return gaps
