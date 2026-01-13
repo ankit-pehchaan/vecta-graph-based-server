@@ -83,6 +83,7 @@ class AgnoAgentService:
 
             # Debts/Liabilities
             debts = store.get("debts", [])
+            debts_confirmed = store.get("debts_confirmed", False)
             if debts:
                 debt_items = []
                 for d in debts:
@@ -98,6 +99,10 @@ class AgnoAgentService:
                         debt_items.append(debt_str)
                 if debt_items:
                     parts.append(f"Debts: {'; '.join(debt_items)}")
+                    if debts_confirmed:
+                        parts.append("DEBTS CONFIRMED: User already said 'no other debts' - DO NOT ask again")
+            elif debts_confirmed:
+                parts.append("Debts: None (user confirmed no debts) - DO NOT ask about debts")
 
             # Investments
             investments = store.get("investments", [])
@@ -468,10 +473,12 @@ Look at the profile data above. DO NOT ask about any field that already has a va
 - Debts shows entries → DON'T ask about debts
 - Monthly income shows value → DON'T ask about income
 - User JUST told you something → DON'T ask about it again
+- DEBTS CONFIRMED shows → User already said no other debts. NEVER ask about debts again.
 
 ## CRITICAL: RESPECT USER'S SKIPPED/UNKNOWN FIELDS
 - Fields marked as "SKIPPED" → User will tell you later. DON'T ask now.
 - Fields marked as "USER DOESN'T KNOW" → User already said they don't know. DON'T ask again.
+- Fields marked as "DEBTS CONFIRMED" → User already confirmed all debts. DON'T ask about other debts.
 - If savings_emergency_linked is true → DON'T ask about emergency fund separately.
 
 ## HANDLING USER CORRECTIONS

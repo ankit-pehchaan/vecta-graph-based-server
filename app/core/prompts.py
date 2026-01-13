@@ -2017,6 +2017,7 @@ If the response contains `debts_incomplete`, handle based on `action_needed`:
    - But user hasn't confirmed if there are more debts
    - Ask: "Do you have any other debts or liabilities - like credit cards, car loans, or HECS?"
    - User's "no" or "that's all" will mark debts as confirmed
+   - **ONCE CONFIRMED, NEVER ASK ABOUT DEBTS AGAIN** - Check profile for "DEBTS CONFIRMED"
 
 3. **User mentions NEW debt later**:
    - If user casually mentions another debt later (e.g., "oh I forgot about my credit card")
