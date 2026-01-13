@@ -310,17 +310,17 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
                     }
                 }
 
-    # 12. LIFE INSURANCE FOR SPOUSE DEPENDENCY - HIGH PRIORITY
+    # 12. LIFE INSURANCE FOR COUPLES - HIGH PRIORITY
     if field_name == "marital_status":
         if field_value in ["married", "de facto", "partnered"]:
-            # Check if spouse might be financially dependent
+            # Check if they have life insurance
             life_insurance = user_context.get("life_insurance")
             has_life_insurance = life_insurance and isinstance(life_insurance, dict) and life_insurance.get("coverage_amount")
 
             if not has_life_insurance and monthly_income and monthly_income > 5000:
                 return {
                     "should_probe": True,
-                    "probe_question": "As the main earner in a relationship, do you have life insurance to protect your partner financially?",
+                    "probe_question": "Being in a relationship, have you or your partner thought about life insurance? It can help protect each other financially.",
                     "potential_goal": "get_life_insurance",
                     "priority": "high",
                     "track_if_denied": False,  # Don't track if denied - they may have other arrangements
@@ -436,9 +436,9 @@ def check_insurance_gaps(user_context: dict) -> list[dict]:
             gaps.append({
                 "type": "life_insurance",
                 "priority": "high",
-                "reason": "Your partner may depend on your income",
+                "reason": "Life insurance can help protect your household income",
                 "recommended_coverage": annual_income * 5,
-                "action": "Consider life insurance to protect your partner"
+                "action": "Consider life insurance to protect each other financially"
             })
 
     # 2. Income Protection Gap
