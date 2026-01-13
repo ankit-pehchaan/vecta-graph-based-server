@@ -24,6 +24,7 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
             - priority: str (critical/high/medium/low)
             - track_if_denied: bool (track as critical_concern even if user says no)
             - denial_note: str (note to add if user denies)
+            - probe_category: str (category for rate limiting - "insurance", "savings", "goals")
     """
 
     age = user_context.get("age")
@@ -31,6 +32,10 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
     monthly_income = user_context.get("monthly_income")
     marital_status = user_context.get("marital_status")
     dependents = user_context.get("dependents", 0)
+
+    # Check what we've recently probed to avoid consecutive similar questions
+    recent_probes = user_context.get("recent_probes", [])
+    last_probe_category = user_context.get("last_probe_category")
 
     # Default response (no probing needed)
     no_probe = {
@@ -216,116 +221,11 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
                     "denial_note": None
                 }
 
-    # 9. LIFE INSURANCE WITH MORTGAGE - HIGH PRIORITY
-    if field_name == "debts" and isinstance(field_value, list):
-        has_mortgage = any(
-            debt.get("type", "").lower() in ["home_loan", "mortgage", "housing_loan"]
-            for debt in field_value if isinstance(debt, dict) and debt.get("type") != "none"
-        )
-
-        if has_mortgage:
-            # Check if user has life insurance
-            life_insurance = user_context.get("life_insurance")
-            has_life_insurance = life_insurance and isinstance(life_insurance, dict) and life_insurance.get("coverage_amount")
-
-            if not has_life_insurance:
-                mortgage_amount = 0
-                for debt in field_value:
-                    if debt.get("type", "").lower() in ["home_loan", "mortgage", "housing_loan"]:
-                        mortgage_amount = debt.get("amount", 0)
-                        break
-
-                return {
-                    "should_probe": True,
-                    "probe_question": f"With a mortgage of ${mortgage_amount:,.0f}, do you have life insurance to cover it if something happens to you?",
-                    "potential_goal": "get_mortgage_protection",
-                    "priority": "high",
-                    "track_if_denied": True,
-                    "denial_note": f"User has ${mortgage_amount:,.0f} mortgage but no life insurance - family could lose home",
-                    "concern_details": {
-                        "concern": "no_life_insurance_with_mortgage",
-                        "mortgage_amount": mortgage_amount,
-                        "recommended_coverage": mortgage_amount
-                    }
-                }
-
-    # 10. PRIVATE HEALTH INSURANCE - MEDIUM PRIORITY (Australian context)
-    if field_name == "private_health_insurance":
-        if not field_value or field_value is False or (isinstance(field_value, dict) and not field_value.get("provider")):
-            # In Australia, Medicare Levy Surcharge applies if income > $93,000 and no PHI
-            if monthly_income and monthly_income * 12 > 93000:
-                annual_income = monthly_income * 12
-                # MLS is 1-1.5% depending on income
-                mls_rate = 0.01 if annual_income < 108000 else (0.0125 if annual_income < 144000 else 0.015)
-                potential_mls = annual_income * mls_rate
-
-                return {
-                    "should_probe": True,
-                    "probe_question": f"With your income, you might be paying around ${potential_mls:,.0f}/year in Medicare Levy Surcharge without private health insurance. Have you considered getting PHI?",
-                    "potential_goal": "get_private_health_insurance",
-                    "priority": "medium",
-                    "track_if_denied": False,
-                    "denial_note": None
-                }
-
-            # Also probe for older users (lifetime health cover loading)
-            if age and age >= 31:
-                loading_years = age - 30
-                loading_percent = min(loading_years * 2, 70)  # 2% per year after 30, max 70%
-
-                return {
-                    "should_probe": True,
-                    "probe_question": f"At {age}, if you get private health insurance later, you'd pay {loading_percent}% more in premiums (Lifetime Health Cover loading). Is private health insurance something you've considered?",
-                    "potential_goal": "get_private_health_insurance",
-                    "priority": "medium",
-                    "track_if_denied": False,
-                    "denial_note": None
-                }
-
-    # 11. INCOME PROTECTION INSURANCE - HIGH PRIORITY FOR HIGH EARNERS
-    if field_name == "monthly_income":
-        if field_value and field_value > 8000:  # > $8k/month ($96k/year)
-            # Check if they have income protection
-            insurance = user_context.get("insurance", [])
-            has_income_protection = False
-            if isinstance(insurance, list):
-                has_income_protection = any(
-                    ins.get("type", "").lower() in ["income_protection", "income protection", "tpd", "total permanent disability"]
-                    for ins in insurance if isinstance(ins, dict)
-                )
-
-            if not has_income_protection:
-                annual_income = field_value * 12
-                return {
-                    "should_probe": True,
-                    "probe_question": f"With ${annual_income:,.0f}/year income, have you thought about income protection insurance in case you can't work due to illness or injury?",
-                    "potential_goal": "get_income_protection",
-                    "priority": "high",
-                    "track_if_denied": True,
-                    "denial_note": f"User earns ${annual_income:,.0f}/year but has no income protection insurance",
-                    "concern_details": {
-                        "concern": "no_income_protection",
-                        "annual_income": annual_income,
-                        "monthly_income": field_value
-                    }
-                }
-
-    # 12. LIFE INSURANCE FOR COUPLES - HIGH PRIORITY
-    if field_name == "marital_status":
-        if field_value in ["married", "de facto", "partnered"]:
-            # Check if they have life insurance
-            life_insurance = user_context.get("life_insurance")
-            has_life_insurance = life_insurance and isinstance(life_insurance, dict) and life_insurance.get("coverage_amount")
-
-            if not has_life_insurance and monthly_income and monthly_income > 5000:
-                return {
-                    "should_probe": True,
-                    "probe_question": "Being in a relationship, have you or your partner thought about life insurance? It can help protect each other financially.",
-                    "potential_goal": "get_life_insurance",
-                    "priority": "high",
-                    "track_if_denied": False,  # Don't track if denied - they may have other arrangements
-                    "denial_note": None
-                }
+    # NOTE: Insurance probes #9, #10, #11, #12 REMOVED
+    # These were too aggressive during information gathering - asking multiple insurance
+    # questions back-to-back feels salesy and pushy. Insurance gaps are tracked in
+    # check_insurance_gaps() for Phase 3 analysis where they're discussed holistically.
+    # Only life insurance WITH DEPENDENTS (scenario #3) remains - that's truly critical.
 
     return no_probe
 
