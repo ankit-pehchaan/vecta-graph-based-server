@@ -43,7 +43,15 @@ from app.core.prompts import (
     DOCUMENT_CONTINUATION_NO_DATA,
     DOCUMENT_REJECTION_CONTINUATION,
 )
-from app.tools.sync_tools import get_pending_visualizations, set_last_agent_question, _get_sync_session
+from app.tools.sync_tools import (
+    get_pending_visualizations,
+    set_last_agent_question,
+    get_last_agent_question,
+    _get_sync_session,
+    reset_extraction_flag,
+    was_extraction_called,
+    sync_extract_financial_facts,
+)
 from app.tools.conversation_manager import add_conversation_turn
 import re
 
@@ -396,7 +404,10 @@ class AdviceService:
                 return False
 
             await websocket.send_json(message)
-            logger.debug(f"[WS] Sent message type: {message.get('type')}")
+            # Only log non-streaming messages to avoid log spam
+            msg_type = message.get('type')
+            if msg_type != 'agent_response' or message.get('is_complete'):
+                logger.debug(f"[WS] Sent message type: {msg_type}")
             return True
         except (WebSocketDisconnect, RuntimeError, Exception) as e:
             # WebSocket disconnected or closed - this is normal
@@ -448,20 +459,25 @@ class AdviceService:
     async def _stream_agent_response(
         self,
         agent,
-        user_message: str
+        user_message: str,
+        username: str = None
     ) -> AsyncGenerator[str, None]:
         """
         Stream agent response using Agno's native streaming.
 
         Uses agent.arun() with streaming support from Agno framework.
+        Passes session_id for conversation persistence.
 
         Yields:
             Text chunks as they're generated token-by-token
         """
         try:
+            # Build session_id for Agno conversation persistence
+            session_id = f"legacy-chat-{username}" if username else None
+
             # Use Agno's native streaming via arun with stream=True
             if hasattr(agent, 'arun'):
-                response = await agent.arun(user_message)
+                response = await agent.arun(user_message, session_id=session_id)
                 full_response = response.content if hasattr(response, 'content') else str(response)
 
                 # Stream response in chunks for smooth UX
@@ -472,7 +488,7 @@ class AdviceService:
                         yield chunk
             else:
                 # Fallback: sync run
-                response = agent.run(user_message)
+                response = agent.run(user_message, session_id=session_id)
                 full_response = response.content if hasattr(response, 'content') else str(response)
 
                 chunk_size = 5
@@ -643,7 +659,7 @@ class AdviceService:
                 agent = await self.agent_service.get_agent(username)
 
                 full_response = ""
-                async for chunk in self._stream_agent_response(agent, user_message):
+                async for chunk in self._stream_agent_response(agent, user_message, username):
                     full_response += chunk
 
                     agent_response = AgentResponse(
@@ -715,10 +731,34 @@ class AdviceService:
                 # Get tool-based agent with session
                 agent = await self.agent_service.get_agent_with_session(username, session)
 
+                # Reset extraction flag before agent turn
+                reset_extraction_flag(username)
+
                 # Run agent with tools
-                logger.debug(f"[TOOL_AGENT] Calling agent.arun() with message: {user_message[:50]}...")
-                response = await agent.arun(user_message)
+                # IMPORTANT: session_id must be passed at runtime for Agno to reuse session!
+                # See: https://docs.agno.com/basics/state/agent/overview
+                session_id = f"chat-{username}"
+                logger.debug(f"[TOOL_AGENT] Calling agent.arun() with session_id={session_id}, message: {user_message[:50]}...")
+                response = await agent.arun(user_message, session_id=session_id)
                 raw_response = response.content if hasattr(response, 'content') else str(response)
+
+                # VALIDATION: Check if extraction tool was actually called
+                # Agent sometimes "hallucinates" calling tools without actually invoking them
+                if not was_extraction_called(username):
+                    logger.warning(f"[TOOL_AGENT] Agent did NOT call extract_financial_facts! Forcing manual extraction...")
+                    # Get the last question for context
+                    last_q = get_last_agent_question(username, settings.DATABASE_URL)
+                    # Force extraction
+                    try:
+                        extraction_result = sync_extract_financial_facts(
+                            user_message=user_message,
+                            agent_last_question=last_q,
+                            db_url=settings.DATABASE_URL,
+                            session_id=username
+                        )
+                        logger.info(f"[TOOL_AGENT] Forced extraction result: {extraction_result.get('message', 'no message')}")
+                    except Exception as e:
+                        logger.error(f"[TOOL_AGENT] Forced extraction failed: {e}")
 
                 logger.debug(f"[TOOL_AGENT] Raw response length: {len(raw_response)}")
 
@@ -728,10 +768,11 @@ class AdviceService:
 
                 # Track last question for next turn
                 # Store in both local dict (for this instance) and sync_tools storage (for the tool to access)
+                # Now persists to database for cluster-safe operation
                 last_q = self._extract_last_question(user_facing_response)
                 if last_q:
                     self._last_agent_questions[username] = last_q
-                    set_last_agent_question(username, last_q)
+                    set_last_agent_question(username, last_q, settings.DATABASE_URL)
                     logger.debug(f"[TOOL_AGENT] Stored last question for next turn: {last_q[:50]}...")
 
                 # Stream the response in chunks
@@ -779,7 +820,7 @@ class AdviceService:
 
                 # Store agent response in persistent conversation history
                 try:
-                    sync_session = _get_sync_session(settings.database_url)
+                    sync_session = _get_sync_session(settings.DATABASE_URL)
                     add_conversation_turn(sync_session, username, "assistant", user_facing_response)
                     sync_session.close()
                 except Exception as e:

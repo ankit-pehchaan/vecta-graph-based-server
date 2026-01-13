@@ -492,6 +492,9 @@ Use stored data for 'what if' scenarios (e.g., loan projections).
 Violating these rules frustrates users!"""
 
         # Create agent with PostgreSQL storage for scalability
+        # IMPORTANT: For dynamically created agents, session/history loading is OFF by default!
+        # Must explicitly enable read_chat_history, etc.
+        # See: https://github.com/agno-agi/agno/issues/4024
         agent = Agent(
             id=f"finance-educator-{username}",
             name="Vecta - Financial Educator",
@@ -503,8 +506,13 @@ Violating these rules frustrates users!"""
                 session_table="agno_sessions"
             ),
             user_id=username,
-            add_history_to_context=True,
-            num_history_runs=5,
+            session_id=f"chat-{username}",  # Critical for conversation history!
+            # History loading - REQUIRED for dynamically created agents
+            add_history_to_context=True,   # Add history to context window
+            num_history_runs=5,            # Number of previous runs to include
+            read_chat_history=True,        # Load chat history from storage
+            read_tool_call_history=True,   # Load tool call history from storage
+            # Session summaries for long conversations
             enable_session_summaries=True,
             markdown=True,
             debug_mode=True  # Enable to see tool calls
@@ -549,6 +557,7 @@ Violating these rules frustrates users!"""
             instructions = f"{FINANCIAL_ADVISER_SYSTEM_PROMPT}\n\nYou're speaking with {user_name}."
 
         # Create agent with PostgreSQL storage (no tools)
+        # IMPORTANT: For dynamically created agents, session/history loading is OFF by default!
         agent = Agent(
             name="Jamie (Financial Educator)",
             model=OpenAIChat(id="gpt-4.1"),
@@ -558,8 +567,11 @@ Violating these rules frustrates users!"""
                 session_table="agno_sessions_legacy"
             ),
             user_id=username,
-            add_history_to_context=True,
-            num_history_runs=10,
+            session_id=f"legacy-chat-{username}",  # Critical for conversation history!
+            # History loading - REQUIRED for dynamically created agents
+            add_history_to_context=True,   # Add history to context window
+            num_history_runs=10,           # Number of previous runs to include
+            read_chat_history=True,        # Load chat history from storage
             markdown=True,
             debug_mode=False
         )

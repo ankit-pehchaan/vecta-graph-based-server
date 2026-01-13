@@ -53,3 +53,4 @@ htmlcov/
 # Database
 *.db
 *.sqlite3
+/vecta-financial-educator-main/

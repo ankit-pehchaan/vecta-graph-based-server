@@ -46,6 +46,25 @@ _temporary_data: dict[str, dict] = {}
 # Key: session_id, Value: last question string
 _last_agent_questions: dict[str, str] = {}
 
+# Tracking for extraction calls - used to detect when agent doesn't call the tool
+# Key: session_id, Value: bool (True if extraction was called this turn)
+_extraction_called: dict[str, bool] = {}
+
+
+def mark_extraction_called(session_id: str) -> None:
+    """Mark that extraction was called for this session's current turn."""
+    _extraction_called[session_id] = True
+
+
+def was_extraction_called(session_id: str) -> bool:
+    """Check if extraction was called for this session's current turn."""
+    return _extraction_called.get(session_id, False)
+
+
+def reset_extraction_flag(session_id: str) -> None:
+    """Reset extraction flag at the start of a new turn."""
+    _extraction_called[session_id] = False
+
 
 def get_pending_visualizations(session_id: str) -> list[dict]:
     """Get and clear any pending visualizations for a session."""
@@ -78,15 +97,63 @@ def clear_temporary_data(session_id: str, key: str = None) -> None:
         _temporary_data[session_id].pop(key, None)
 
 
-def get_last_agent_question(session_id: str) -> str:
-    """Get the last question the agent asked for this session."""
-    return _last_agent_questions.get(session_id, "")
+def get_last_agent_question(session_id: str, db_url: str = None) -> str:
+    """Get the last question the agent asked for this session.
+
+    Uses database (field_states) for persistence, with in-memory cache.
+    """
+    # Try in-memory first (for same-instance fast access)
+    if session_id in _last_agent_questions:
+        return _last_agent_questions[session_id]
+
+    # Try database
+    if db_url:
+        try:
+            session = _get_sync_session(db_url)
+            try:
+                user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+                if user and user.field_states:
+                    last_q = user.field_states.get("_last_agent_question", "")
+                    if last_q:
+                        _last_agent_questions[session_id] = last_q  # Cache it
+                        return last_q
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"[LAST_Q] Failed to read from DB: {e}")
+
+    return ""
 
 
-def set_last_agent_question(session_id: str, question: str) -> None:
-    """Store the last question the agent asked for this session."""
-    if question:
-        _last_agent_questions[session_id] = question
+def set_last_agent_question(session_id: str, question: str, db_url: str = None) -> None:
+    """Store the last question the agent asked for this session.
+
+    Persists to database (field_states) and in-memory cache.
+    """
+    if not question:
+        return
+
+    # Update in-memory
+    _last_agent_questions[session_id] = question
+
+    # Persist to database
+    if db_url:
+        try:
+            session = _get_sync_session(db_url)
+            try:
+                user = session.execute(
+                    select(User).where(User.email == session_id).with_for_update()
+                ).scalar_one_or_none()
+                if user:
+                    field_states = user.field_states or {}
+                    field_states["_last_agent_question"] = question
+                    user.field_states = field_states
+                    session.commit()
+                    logger.debug(f"[LAST_Q] Persisted last question to DB for {session_id}")
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"[LAST_Q] Failed to persist to DB: {e}")
 
 
 # Storage for debts confirmation status per session (in-memory cache, backed by DB)
@@ -1153,8 +1220,12 @@ def sync_extract_financial_facts(
     logger.info(f"[TOOL:extract_facts] Called for session: {session_id}")
     logger.info(f"[TOOL:extract_facts] User message: {user_message[:100]}")
 
+    # Mark that extraction was called (used for validation in advice_service)
+    mark_extraction_called(session_id)
+
     # Use stored last question (set by advice_service after each response)
-    stored_last_question = get_last_agent_question(session_id)
+    # Now reads from database for cluster-safe persistence
+    stored_last_question = get_last_agent_question(session_id, db_url)
     effective_last_question = stored_last_question or agent_last_question
 
     logger.info(f"[TOOL:extract_facts] Stored last question: {stored_last_question[:100] if stored_last_question else 'None'}")
@@ -1365,11 +1436,21 @@ Extract any of these fields if mentioned:
   * If user says "I don't know" or "not sure" → "not_provided"
 - monthly_expenses (integer in Australian dollars)
   * If user says "I don't know" or "not sure" → "not_provided"
-- savings (integer in Australian dollars - includes "cash", "cash savings", "bank balance", "money saved", "in the bank")
+- savings (integer in Australian dollars - includes "cash", "cash savings", "bank balance", "money saved", "in the bank", "assets" when referring to liquid cash)
   * "10k in cash" → savings: 10000
   * "got 5k saved" → savings: 5000
   * "20k in my account" → savings: 20000
-  * If user says "no savings" or "don't have savings" → 0
+  * ZERO VALUES - MUST EXTRACT:
+    - "savings are 0" or "savings is 0" → savings: 0
+    - "zero savings" or "0 savings" → savings: 0
+    - "my savings are zero" → savings: 0
+    - "no savings" or "don't have savings" → savings: 0
+    - "I have nothing saved" → savings: 0
+    - "savings is 0 now" → savings: 0
+  * ASSETS handling (when user says "assets"):
+    - If unclear whether cash or investments, ASK "Is that cash savings or investments?"
+    - "my assets are zero" → savings: 0 (assume liquid unless specified)
+    - "add 50k to assets" → ASK for clarification before extracting
   * If user says "I don't know" or "not sure" → "not_provided"
 - emergency_fund (integer in Australian dollars - specifically labeled emergency fund or rainy day fund)
   * If user says "no emergency fund" or "don't have an emergency fund" → 0
@@ -1395,7 +1476,14 @@ Extract any of these fields if mentioned:
   * When agent asks "any other debts?" and user says "no" or "nope" → true
   * IMPORTANT: Only set this when user explicitly confirms no other debts. Don't assume.
 - investments (list of {{type, amount}})
+  * ZERO VALUES - MUST EXTRACT:
+    - "no investments" → investments: [{{"type": "none", "amount": 0}}]
+    - "investments are zero" → investments: [{{"type": "none", "amount": 0}}]
+    - "I don't have any investments" → investments: [{{"type": "none", "amount": 0}}]
   * If user says "I don't know" or "not sure" → "not_provided"
+- assets_clarification_needed (boolean: set to true if user mentions "assets" ambiguously)
+  * If user says "add X to my assets" or "my assets are X" without specifying type → set to true
+  * The agent should then ask: "Is that cash/savings or investments (like shares, property)?"
 - marital_status (single/married/divorced/partnered/de_facto)
   * "I am single" or "single right now" → "single"
   * "I'm married" or "got married" → "married"

@@ -1963,14 +1963,21 @@ Classifies the user's financial goal into categories (small_purchase, medium_pur
 Extracts financial information from user's message (age, income, debts, savings, etc.)
 
 **Parameters:**
-- user_message: The user's response
-- agent_last_question: Your previous question to provide context (e.g., "What's your monthly income?")
+- user_message: The user's response (COPY THE EXACT USER MESSAGE - don't paraphrase)
+- agent_last_question: YOUR LAST QUESTION from the previous turn (e.g., "What's your monthly income?")
+
+**⚠️ CRITICAL - YOU MUST ACTUALLY CALL THIS TOOL:**
+- Writing "Called extract_financial_facts" in REASONING is NOT the same as calling it
+- You MUST use the function_call mechanism to actually invoke the tool
+- If you just write about calling tools without invoking them, extraction FAILS
+- EVERY user message MUST trigger an actual tool call, not just text about it
 
 **When to call:**
-- EVERY turn after goal is classified
-- Always call this first before other tools
-- Pass your last question for context so the tool knows what the user is answering
-- Even if you think nothing new was mentioned (let the tool decide)
+- EVERY turn after goal is classified - NO EXCEPTIONS
+- Always call this FIRST before other tools
+- Pass the EXACT user message as first parameter
+- Pass YOUR last question (from your previous response) as second parameter
+- Even if you think nothing new was mentioned (let the tool decide - you might be wrong)
 
 **IMPORTANT - Goal Discovery:**
 This tool now also discovers hidden goals! It returns:
