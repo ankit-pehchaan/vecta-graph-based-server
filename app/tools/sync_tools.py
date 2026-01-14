@@ -903,11 +903,83 @@ GOAL_CLASSIFICATIONS = {
 }
 
 
+def _check_duplicate_goal(client: OpenAI, new_goal: str, existing_goals: list[str]) -> dict | None:
+    """
+    Check if new goal is semantically similar to any existing goals.
+
+    Returns:
+        dict with matching goal info if duplicate found, None otherwise
+    """
+    if not existing_goals:
+        return None
+
+    existing_list = "\n".join([f"- {g}" for g in existing_goals])
+
+    prompt = f"""Check if this new goal is semantically the same as any existing goal.
+
+New goal: "{new_goal}"
+
+Existing goals:
+{existing_list}
+
+Two goals are the SAME if they refer to the same financial objective, even with different wording:
+- "buy a house" = "purchase property" = "save for home deposit" (SAME - all about home ownership)
+- "buy a car" ≠ "buy a house" (DIFFERENT - different purchases)
+- "build emergency fund" = "save for emergencies" (SAME)
+- "invest in ETFs" = "start investing" (SAME - both about starting investments)
+
+Respond with JSON:
+{{"is_duplicate": true/false, "matching_goal": "the existing goal that matches" or null, "reasoning": "brief explanation"}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": "You are a goal deduplication checker. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+
+        result = json.loads(response.choices[0].message.content)
+        if result.get("is_duplicate") and result.get("matching_goal"):
+            logger.info(f"[TOOL:classify_goal] Found duplicate: '{new_goal}' matches '{result['matching_goal']}'")
+            return result
+        return None
+    except Exception as e:
+        logger.warning(f"[TOOL:classify_goal] Duplicate check failed: {e}")
+        return None
+
+
 def sync_classify_goal(user_goal: str, db_url: str, session_id: str) -> dict:
-    """Classify user's financial goal (sync version)."""
+    """Classify user's financial goal (sync version) with semantic deduplication."""
     logger.info(f"[TOOL:classify_goal] Called with goal: {user_goal[:50]}, session: {session_id}")
     client = OpenAI()
 
+    # First, check for semantic duplicates against existing goals
+    session = _get_sync_session(db_url)
+    try:
+        user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
+        existing_goals = []
+        if user:
+            goals = session.execute(select(Goal).where(Goal.user_id == user.id)).scalars().all()
+            existing_goals = [g.description for g in goals if g.description]
+    finally:
+        session.close()
+
+    # Check for duplicates
+    duplicate_result = _check_duplicate_goal(client, user_goal, existing_goals)
+    if duplicate_result:
+        return {
+            "classification": None,
+            "is_duplicate": True,
+            "matching_goal": duplicate_result["matching_goal"],
+            "reasoning": duplicate_result["reasoning"],
+            "message": f"This goal is similar to an existing goal: '{duplicate_result['matching_goal']}'. No need to add again."
+        }
+
+    # Not a duplicate - proceed with classification
     classifications_text = "\n".join([f"- {k}: {v}" for k, v in GOAL_CLASSIFICATIONS.items()])
 
     prompt = f"""Classify the following user goal into one of these categories:
@@ -949,32 +1021,24 @@ Respond with JSON:
                 "conversation_phase": "assessment"
             })
 
-            # Also create a Goal record in the Goals table
+            # Create a Goal record (we already checked for duplicates above)
             user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
             if user:
-                # Check if goal already exists
-                existing_goal = session.execute(
-                    select(Goal).where(
-                        Goal.user_id == user.id,
-                        Goal.description == user_goal
-                    )
-                ).scalar_one_or_none()
-
-                if not existing_goal:
-                    new_goal = Goal(
-                        user_id=user.id,
-                        description=user_goal,
-                        priority="high"  # Primary goal is high priority
-                    )
-                    session.add(new_goal)
-                    session.commit()
-                    logger.info(f"[TOOL:classify_goal] Created Goal record: {user_goal}")
+                new_goal = Goal(
+                    user_id=user.id,
+                    description=user_goal,
+                    priority="high"  # Primary goal is high priority
+                )
+                session.add(new_goal)
+                session.commit()
+                logger.info(f"[TOOL:classify_goal] Created Goal record: {user_goal}")
         finally:
             session.close()
 
         return {
             "classification": result["classification"],
             "reasoning": result["reasoning"],
+            "is_duplicate": False,
             "message": f"Goal classified as: {result['classification']}"
         }
 
@@ -1424,10 +1488,25 @@ If user says "I meant X", "no I said X", "actually X", or is correcting a previo
 - Set "correction_new_value": the corrected value
 - Look at the conversation history to understand what they're correcting
 
-CRITICAL INSTRUCTION - SAVINGS AND EMERGENCY FUND:
-If user says their savings IS their emergency fund (e.g., "that's my emergency fund", "same thing", "it covers emergencies"):
-- Set "savings_is_emergency_fund": true
-- Do NOT ask separately about emergency fund
+CRITICAL INSTRUCTION - SAVINGS AND EMERGENCY FUND CLARIFICATION:
+When agent asks about emergency fund after savings was provided, handle these cases:
+
+1. SAME POOL: User says savings IS emergency fund (e.g., "that's my emergency fund", "same thing", "it covers emergencies", "yes", "that's it"):
+   - Set "savings_is_emergency_fund": true
+   - Set "emergency_fund_clarified": true
+
+2. SEPARATE FUND: User has a separate emergency fund (e.g., "I have 10k separate for emergencies"):
+   - Set "emergency_fund": the separate amount
+   - Set "emergency_fund_clarified": true
+
+3. SPLIT: User splits the savings (e.g., "20k is emergency, 30k is general savings"):
+   - Set "emergency_fund": the emergency portion (20000)
+   - Set "savings": the general savings portion (30000) - this UPDATES the existing savings
+   - Set "emergency_fund_clarified": true
+
+4. NO EMERGENCY FUND: User says no emergency fund (e.g., "no", "don't have one", "no separate fund"):
+   - Set "emergency_fund": 0
+   - Set "emergency_fund_clarified": true
 
 Extract any of these fields if mentioned:
 - age (integer)
@@ -1615,7 +1694,16 @@ If nothing to extract, return: {{}}"""
         if savings_is_ef:
             link_savings_emergency_fund(session, session_id, True)
             update_field_state(session, session_id, "emergency_fund", FieldState.ANSWERED)
+            # Also mark as clarified in field_states
+            update_field_state(session, session_id, "_emergency_fund_clarified", FieldState.ANSWERED)
             logger.info(f"[TOOL:extract_facts] Savings and emergency fund linked for {session_id}")
+
+        # Handle emergency_fund_clarified flag (user answered the clarification question)
+        ef_clarified = extracted_facts.pop("emergency_fund_clarified", None)
+        if ef_clarified:
+            update_field_state(session, session_id, "emergency_fund", FieldState.ANSWERED)
+            update_field_state(session, session_id, "_emergency_fund_clarified", FieldState.ANSWERED)
+            logger.info(f"[TOOL:extract_facts] Emergency fund clarified for {session_id}")
 
         # Handle correction detected by LLM
         is_correction = extracted_facts.pop("is_correction", None)
@@ -1629,33 +1717,38 @@ If nothing to extract, return: {{}}"""
                 extracted_facts[correction_field] = correction_new_value
             logger.info(f"[TOOL:extract_facts] LLM detected correction: {correction_field} -> {correction_new_value}")
 
-        # Handle user_goals
+        # Handle user_goals with semantic deduplication
         user_goals = extracted_facts.pop("user_goals", [])
         if user_goals:
             stated_goals = current_store.get("stated_goals", [])
             user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
 
+            # Get existing goals for deduplication
+            existing_goal_descriptions = []
+            if user:
+                existing_goals_db = session.execute(select(Goal).where(Goal.user_id == user.id)).scalars().all()
+                existing_goal_descriptions = [g.description for g in existing_goals_db if g.description]
+
             for goal in user_goals:
+                # Check semantic duplicate against existing goals
+                duplicate = _check_duplicate_goal(client, goal, existing_goal_descriptions + stated_goals)
+                if duplicate:
+                    logger.info(f"[TOOL:extract_facts] Skipping duplicate goal: '{goal}' matches '{duplicate['matching_goal']}'")
+                    continue
+
                 if goal not in stated_goals:
                     stated_goals.append(goal)
 
-                    # Also create Goal record in Goals table
+                    # Create Goal record in Goals table
                     if user:
-                        existing_goal = session.execute(
-                            select(Goal).where(
-                                Goal.user_id == user.id,
-                                Goal.description == goal
-                            )
-                        ).scalar_one_or_none()
-
-                        if not existing_goal:
-                            new_goal = Goal(
-                                user_id=user.id,
-                                description=goal,
-                                priority="medium"  # Secondary goals are medium priority
-                            )
-                            session.add(new_goal)
-                            logger.info(f"[TOOL:extract_facts] Created Goal record: {goal}")
+                        new_goal = Goal(
+                            user_id=user.id,
+                            description=goal,
+                            priority="medium"  # Secondary goals are medium priority
+                        )
+                        session.add(new_goal)
+                        existing_goal_descriptions.append(goal)  # Add to list for next iteration
+                        logger.info(f"[TOOL:extract_facts] Created Goal record: {goal}")
 
             _update_user_store(session, session_id, {"stated_goals": stated_goals})
 
@@ -1807,9 +1900,13 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
                         populated_fields.append(field)
                     continue  # Don't re-check this field
 
-            # Special handling for emergency_fund when linked to savings
-            if field == "emergency_fund" and savings_emergency_linked:
-                if current_store.get("savings") is not None:
+            # Special handling for emergency_fund
+            # If linked to savings OR clarified OR has explicit value, consider resolved
+            if field == "emergency_fund":
+                ef_clarified_state = field_states.get("_emergency_fund_clarified", {})
+                emergency_fund_clarified = isinstance(ef_clarified_state, dict) and ef_clarified_state.get("state") in [FieldState.ANSWERED, FieldState.CORRECTED, "answered", "corrected"]
+                has_emergency_fund = current_store.get("emergency_fund") is not None
+                if savings_emergency_linked or emergency_fund_clarified or has_emergency_fund:
                     populated_fields.append(field)
                     resolved_fields.append(field)
                     continue

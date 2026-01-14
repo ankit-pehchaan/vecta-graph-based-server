@@ -81,6 +81,15 @@ class AgnoAgentService:
             if store.get("emergency_fund"):
                 parts.append(f"Emergency fund: ${store['emergency_fund']:,.0f}")
 
+            # Emergency fund clarification status
+            field_states = store.get("field_states", {})
+            ef_clarified_state = field_states.get("_emergency_fund_clarified", {})
+            emergency_fund_clarified = isinstance(ef_clarified_state, dict) and ef_clarified_state.get("state") in ["answered", "corrected"]
+
+            if store.get("savings") and not emergency_fund_clarified and not store.get("savings_emergency_linked"):
+                if not store.get("emergency_fund"):
+                    parts.append("EMERGENCY FUND STATUS: NEEDS ONE CLARIFICATION - Ask: 'Is any of that your emergency fund, or do you have a separate one?' Then based on answer: if same pool → note it; if separate amount → extract it; if split → extract the split amounts.")
+
             # Debts/Liabilities
             debts = store.get("debts", [])
             debts_confirmed = store.get("debts_confirmed", False)
