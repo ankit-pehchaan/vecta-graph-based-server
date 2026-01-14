@@ -1768,7 +1768,7 @@ Respond with JSON: {{"is_response_to_probe": true/false, "confirmed": true/false
 # SCOPE DEFINER (Sync)
 # =============================================================================
 
-BASELINE_FIELDS = ["age", "monthly_income", "monthly_expenses", "emergency_fund", "debts", "superannuation"]
+BASELINE_FIELDS = ["age", "monthly_income", "monthly_expenses", "emergency_fund", "debts", "superannuation", "life_insurance", "private_health_insurance", "investments"]
 
 GOAL_SPECIFIC_FIELDS = {
     "small_purchase": ["savings", "timeline"],

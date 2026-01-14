@@ -221,11 +221,9 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
                     "denial_note": None
                 }
 
-    # NOTE: Insurance probes #9, #10, #11, #12 REMOVED
-    # These were too aggressive during information gathering - asking multiple insurance
-    # questions back-to-back feels salesy and pushy. Insurance gaps are tracked in
-    # check_insurance_gaps() for Phase 3 analysis where they're discussed holistically.
-    # Only life insurance WITH DEPENDENTS (scenario #3) remains - that's truly critical.
+    # NOTE: Insurance and investments are now in BASELINE_FIELDS (asked during normal assessment)
+    # If user expresses interest ("I'm looking into life insurance"), it's captured as user_goals
+    # by the extraction prompt, so no separate probes needed here.
 
     return no_probe
 
