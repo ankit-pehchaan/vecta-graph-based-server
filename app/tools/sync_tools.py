@@ -903,86 +903,35 @@ GOAL_CLASSIFICATIONS = {
 }
 
 
-def _check_duplicate_goal(client: OpenAI, new_goal: str, existing_goals: list[str]) -> dict | None:
-    """
-    Check if new goal is semantically similar to any existing goals.
-
-    Returns:
-        dict with matching goal info if duplicate found, None otherwise
-    """
-    if not existing_goals:
-        return None
-
-    existing_list = "\n".join([f"- {g}" for g in existing_goals])
-
-    prompt = f"""Check if this new goal is semantically the same as any existing goal.
-
-New goal: "{new_goal}"
-
-Existing goals:
-{existing_list}
-
-Two goals are the SAME if they refer to the same financial objective, even with different wording:
-- "buy a house" = "purchase property" = "save for home deposit" (SAME - all about home ownership)
-- "buy a car" ≠ "buy a house" (DIFFERENT - different purchases)
-- "build emergency fund" = "save for emergencies" (SAME)
-- "invest in ETFs" = "start investing" (SAME - both about starting investments)
-
-Respond with JSON:
-{{"is_duplicate": true/false, "matching_goal": "the existing goal that matches" or null, "reasoning": "brief explanation"}}"""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": "You are a goal deduplication checker. Always respond with valid JSON only."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"}
-        )
-
-        result = json.loads(response.choices[0].message.content)
-        if result.get("is_duplicate") and result.get("matching_goal"):
-            logger.info(f"[TOOL:classify_goal] Found duplicate: '{new_goal}' matches '{result['matching_goal']}'")
-            return result
-        return None
-    except Exception as e:
-        logger.warning(f"[TOOL:classify_goal] Duplicate check failed: {e}")
-        return None
-
-
 def sync_classify_goal(user_goal: str, db_url: str, session_id: str) -> dict:
     """Classify user's financial goal (sync version) with semantic deduplication."""
+    from app.services.goal_service import GoalService
+
     logger.info(f"[TOOL:classify_goal] Called with goal: {user_goal[:50]}, session: {session_id}")
     client = OpenAI()
 
-    # First, check for semantic duplicates against existing goals
+    # Use centralized GoalService for deduplication and creation
     session = _get_sync_session(db_url)
     try:
-        user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
-        existing_goals = []
-        if user:
-            goals = session.execute(select(Goal).where(Goal.user_id == user.id)).scalars().all()
-            existing_goals = [g.description for g in goals if g.description]
-    finally:
-        session.close()
+        goal_service = GoalService(session, session_id)
 
-    # Check for duplicates
-    duplicate_result = _check_duplicate_goal(client, user_goal, existing_goals)
-    if duplicate_result:
-        return {
-            "classification": None,
-            "is_duplicate": True,
-            "matching_goal": duplicate_result["matching_goal"],
-            "reasoning": duplicate_result["reasoning"],
-            "message": f"This goal is similar to an existing goal: '{duplicate_result['matching_goal']}'. No need to add again."
-        }
+        # Check for duplicates first
+        existing_goals = goal_service._get_existing_goals()
+        duplicate = goal_service._check_semantic_duplicate(user_goal, existing_goals)
 
-    # Not a duplicate - proceed with classification
-    classifications_text = "\n".join([f"- {k}: {v}" for k, v in GOAL_CLASSIFICATIONS.items()])
+        if duplicate:
+            return {
+                "classification": None,
+                "is_duplicate": True,
+                "matching_goal": duplicate["matching_goal"],
+                "reasoning": duplicate["reasoning"],
+                "message": f"This goal is similar to an existing goal: '{duplicate['matching_goal']}'. No need to add again."
+            }
 
-    prompt = f"""Classify the following user goal into one of these categories:
+        # Not a duplicate - proceed with classification
+        classifications_text = "\n".join([f"- {k}: {v}" for k, v in GOAL_CLASSIFICATIONS.items()])
+
+        prompt = f"""Classify the following user goal into one of these categories:
 
 {classifications_text}
 
@@ -991,7 +940,6 @@ User's goal: "{user_goal}"
 Respond with JSON:
 {{"classification": "category_name", "reasoning": "brief explanation"}}"""
 
-    try:
         response = client.chat.completions.create(
             model="gpt-4.1",
             messages=[
@@ -999,7 +947,7 @@ Respond with JSON:
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
-            response_format={"type": "json_object"}  # Force JSON output
+            response_format={"type": "json_object"}
         )
 
         raw_content = response.choices[0].message.content
@@ -1011,29 +959,20 @@ Respond with JSON:
             logger.warning(f"[TOOL:classify_goal] Could not parse response: {raw_content[:100]}")
             result = {"classification": "life_event", "reasoning": "Default classification"}
 
-        # Update store
-        session = _get_sync_session(db_url)
-        try:
-            # Update user fields
-            _update_user_store(session, session_id, {
-                "user_goal": user_goal,
-                "goal_classification": result["classification"],
-                "conversation_phase": "assessment"
-            })
+        # Update user store
+        _update_user_store(session, session_id, {
+            "user_goal": user_goal,
+            "goal_classification": result["classification"],
+            "conversation_phase": "assessment"
+        })
 
-            # Create a Goal record (we already checked for duplicates above)
-            user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
-            if user:
-                new_goal = Goal(
-                    user_id=user.id,
-                    description=user_goal,
-                    priority="high"  # Primary goal is high priority
-                )
-                session.add(new_goal)
-                session.commit()
-                logger.info(f"[TOOL:classify_goal] Created Goal record: {user_goal}")
-        finally:
-            session.close()
+        # Add goal via centralized service (already checked for duplicates)
+        goal_result = goal_service.add_goal(
+            description=user_goal,
+            priority="high",
+            goal_type="classified",
+            skip_duplicate_check=True  # Already checked above
+        )
 
         return {
             "classification": result["classification"],
@@ -1043,7 +982,10 @@ Respond with JSON:
         }
 
     except Exception as e:
+        logger.error(f"[TOOL:classify_goal] Error: {e}")
         return {"classification": None, "error": str(e)}
+    finally:
+        session.close()
 
 
 # =============================================================================
@@ -1717,40 +1659,26 @@ If nothing to extract, return: {{}}"""
                 extracted_facts[correction_field] = correction_new_value
             logger.info(f"[TOOL:extract_facts] LLM detected correction: {correction_field} -> {correction_new_value}")
 
-        # Handle user_goals with semantic deduplication
+        # Handle user_goals with semantic deduplication via GoalService
         user_goals = extracted_facts.pop("user_goals", [])
+        added_goals = []
         if user_goals:
-            stated_goals = current_store.get("stated_goals", [])
-            user = session.execute(select(User).where(User.email == session_id)).scalar_one_or_none()
-
-            # Get existing goals for deduplication
-            existing_goal_descriptions = []
-            if user:
-                existing_goals_db = session.execute(select(Goal).where(Goal.user_id == user.id)).scalars().all()
-                existing_goal_descriptions = [g.description for g in existing_goals_db if g.description]
+            from app.services.goal_service import GoalService
+            goal_service = GoalService(session, session_id)
 
             for goal in user_goals:
-                # Check semantic duplicate against existing goals
-                duplicate = _check_duplicate_goal(client, goal, existing_goal_descriptions + stated_goals)
-                if duplicate:
-                    logger.info(f"[TOOL:extract_facts] Skipping duplicate goal: '{goal}' matches '{duplicate['matching_goal']}'")
-                    continue
-
-                if goal not in stated_goals:
-                    stated_goals.append(goal)
-
-                    # Create Goal record in Goals table
-                    if user:
-                        new_goal = Goal(
-                            user_id=user.id,
-                            description=goal,
-                            priority="medium"  # Secondary goals are medium priority
-                        )
-                        session.add(new_goal)
-                        existing_goal_descriptions.append(goal)  # Add to list for next iteration
-                        logger.info(f"[TOOL:extract_facts] Created Goal record: {goal}")
-
-            _update_user_store(session, session_id, {"stated_goals": stated_goals})
+                result = goal_service.add_goal(
+                    description=goal,
+                    priority="medium",  # Secondary goals are medium priority
+                    goal_type="stated"
+                )
+                if result.get("added"):
+                    added_goals.append(goal)
+                    logger.info(f"[TOOL:extract_facts] Added goal via GoalService: {goal}")
+                elif result.get("is_duplicate"):
+                    logger.info(f"[TOOL:extract_facts] Skipping duplicate goal: '{goal}' matches '{result.get('matching_goal')}'")
+                else:
+                    logger.warning(f"[TOOL:extract_facts] Failed to add goal: {goal} - {result.get('error', 'Unknown error')}")
 
         # Handle no_other_debts confirmation
         no_other_debts = extracted_facts.pop("no_other_debts", None)
@@ -1790,7 +1718,7 @@ If nothing to extract, return: {{}}"""
 
         return {
             "extracted_facts": extracted_facts,
-            "stated_goals_added": user_goals,
+            "stated_goals_added": added_goals,
             "probing_suggestions": probing_suggestions,
             "do_not_ask": list(extracted_facts.keys()) if extracted_facts else [],
             "message": message
