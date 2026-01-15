@@ -609,19 +609,45 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
 
     # Handle debts -> Liability table
     if "debts" in updates and updates["debts"]:
+        from datetime import datetime as dt
+        current_year = dt.now().year
+
         for debt in updates["debts"]:
             # Skip "no debts" placeholder
             if debt.get("type") == "none":
                 continue
 
-            # Calculate current balance if original_amount provided but amount missing
+            # === NORMALIZE TIMELINE FIELDS ===
+            # Convert start_year to years_ago
+            years_ago = debt.get("years_ago", 0)
+            if not years_ago and debt.get("start_year"):
+                years_ago = current_year - debt.get("start_year")
+                logger.info(f"[UPDATE_STORE] Calculated years_ago={years_ago} from start_year={debt.get('start_year')}")
+
+            # Convert remaining_years to tenure_months
+            tenure_remaining = debt.get("tenure_months")
+            if not tenure_remaining and debt.get("remaining_years"):
+                tenure_remaining = debt.get("remaining_years") * 12
+                logger.info(f"[UPDATE_STORE] Converted remaining_years={debt.get('remaining_years')} to tenure_months={tenure_remaining}")
+
+            # Calculate tenure_months from original_term_years and years_ago
+            original_term_years = debt.get("original_term_years")
+            if not tenure_remaining and original_term_years and years_ago:
+                remaining_years = original_term_years - years_ago
+                if remaining_years > 0:
+                    tenure_remaining = remaining_years * 12
+                    logger.info(f"[UPDATE_STORE] Calculated tenure_months={tenure_remaining} from original_term={original_term_years} - years_ago={years_ago}")
+
+            # Update debt dict with normalized values for storage
+            if tenure_remaining:
+                debt["tenure_months"] = tenure_remaining
+
+            # === CALCULATE CURRENT BALANCE ===
             amount = debt.get("amount")
             if not amount and debt.get("original_amount"):
                 original = debt.get("original_amount")
-                years_ago = debt.get("years_ago", 0)
                 rate = debt.get("interest_rate")
                 emi = debt.get("monthly_payment")
-                tenure_remaining = debt.get("tenure_months")
 
                 # If we have enough info, calculate current balance
                 if rate and emi and (years_ago or tenure_remaining):
@@ -631,12 +657,12 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
 
                         # Calculate current balance using amortization formula
                         # Balance = P * [(1+r)^n - (1+r)^p] / [(1+r)^n - 1]
-                        # Where P = original, r = monthly rate, n = total payments, p = payments made
                         if tenure_remaining:
                             total_payments = payments_made + tenure_remaining
+                        elif original_term_years:
+                            total_payments = original_term_years * 12
                         else:
-                            # Estimate total term from original loan
-                            total_payments = payments_made + int(tenure_remaining or 300)  # Default 25 years
+                            total_payments = payments_made + 300  # Default 25 years remaining
 
                         if monthly_rate > 0:
                             factor = (1 + monthly_rate) ** total_payments
@@ -649,6 +675,12 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
                     except Exception as e:
                         logger.warning(f"[UPDATE_STORE] Could not calculate balance: {e}, using original amount")
                         amount = original
+                elif original_term_years and years_ago:
+                    # Have original term and time elapsed - can estimate without rate/emi
+                    # Simple linear approximation (not accurate for interest-bearing loans)
+                    portion_paid = years_ago / original_term_years
+                    amount = original * (1 - portion_paid)
+                    logger.info(f"[UPDATE_STORE] Estimated balance: {amount:.0f} ({portion_paid*100:.0f}% of {original} paid over {years_ago} years)")
                 else:
                     # Not enough info to calculate, use original as estimate
                     amount = original
@@ -1339,6 +1371,7 @@ def sync_extract_financial_facts(
             pending_probe = current_store.get("pending_probe")
             if pending_probe:
                 if message_type == MessageType.CONFIRMATION:
+                    # Add to discovered_goals list
                     discovered_goals = current_store.get("discovered_goals", [])
                     discovered_goals.append({
                         "goal": pending_probe["potential_goal"],
@@ -1346,6 +1379,20 @@ def sync_extract_financial_facts(
                         "priority": pending_probe["priority"],
                     })
                     _update_user_store(session, session_id, {"discovered_goals": discovered_goals, "pending_probe": None})
+
+                    # Also add to Goals table via GoalService
+                    from app.services.goal_service import GoalService
+                    goal_service = GoalService(session, session_id)
+                    goal_result = goal_service.add_goal(
+                        description=pending_probe["potential_goal"],
+                        priority=pending_probe.get("priority", "medium"),
+                        goal_type="discovered"
+                    )
+                    if goal_result.get("added"):
+                        logger.info(f"[TOOL:extract_facts] Added discovered goal to Goals table: {pending_probe['potential_goal']}")
+                    elif goal_result.get("is_duplicate"):
+                        logger.info(f"[TOOL:extract_facts] Discovered goal already exists: {pending_probe['potential_goal']}")
+
                     return {
                         "extracted_facts": {},
                         "goal_confirmed": True,
@@ -1398,6 +1445,7 @@ def sync_extract_financial_facts(
                 _update_user_store(session, session_id, {"pending_probe": None})
 
                 if goal_response["confirmed"]:
+                    # Add to discovered_goals list
                     discovered_goals = current_store.get("discovered_goals", [])
                     discovered_goals.append({
                         "goal": pending_probe["potential_goal"],
@@ -1405,6 +1453,18 @@ def sync_extract_financial_facts(
                         "priority": pending_probe["priority"],
                     })
                     _update_user_store(session, session_id, {"discovered_goals": discovered_goals})
+
+                    # Also add to Goals table via GoalService
+                    from app.services.goal_service import GoalService
+                    goal_service = GoalService(session, session_id)
+                    goal_result = goal_service.add_goal(
+                        description=pending_probe["potential_goal"],
+                        priority=pending_probe.get("priority", "medium"),
+                        goal_type="discovered"
+                    )
+                    if goal_result.get("added"):
+                        logger.info(f"[TOOL:extract_facts] Added discovered goal to Goals table: {pending_probe['potential_goal']}")
+
                     return {
                         "extracted_facts": {},
                         "goal_confirmed": True,
@@ -1519,23 +1579,31 @@ Extract any of these fields if mentioned:
   * If user says "no emergency fund" or "don't have an emergency fund" → 0
   * If user says "3 months" → calculate: monthly_expenses * 3
   * If user says "I don't know" or "not sure" → "not_provided"
-- debts (list of {{type, amount, interest_rate, monthly_payment, tenure_months}})
+- debts (list of {{type, amount, interest_rate, monthly_payment, tenure_months, ...}})
   * type: loan type (personal_loan, home_loan, car_loan, credit_card, hecs, etc.)
-  * amount: total loan amount/principal
+  * amount: current loan balance/principal (if known)
   * interest_rate: annual interest rate as percentage (e.g., 8 for 8%)
   * monthly_payment: EMI/monthly repayment amount
-  * tenure_months: loan term in months (e.g., 3 years = 36 months)
-  * original_amount: original loan amount when taken (useful if current balance unknown)
-  * years_ago: how many years ago the loan was taken
+  * tenure_months: REMAINING loan term in months (e.g., "25 years left" = 300)
+  * TIMELINE FIELDS (capture whatever user provides):
+    - original_amount: original loan amount when taken (e.g., "took 600k loan")
+    - years_ago: how many years ago loan was taken (e.g., "4 years back" = 4)
+    - start_year: year loan started (e.g., "started in 2020" = 2020)
+    - original_term_years: original total loan term (e.g., "30-year loan" = 30)
+    - remaining_years: years left on loan (convert to tenure_months: remaining_years * 12)
   * EXAMPLES:
     - Full info: "30k personal loan at 8% with 900 EMI for 3 years" → {{"type": "personal_loan", "amount": 30000, "interest_rate": 8, "monthly_payment": 900, "tenure_months": 36}}
     - Partial info: "I have a personal loan" → {{"type": "personal_loan"}} (amount missing - agent should ask)
     - Partial info: "personal loan of 30k" → {{"type": "personal_loan", "amount": 30000}} (rate/tenure missing - agent should ask)
     - Credit card: "5k on credit card" → {{"type": "credit_card", "amount": 5000}}
     - HECS: "20k HECS debt" → {{"type": "hecs", "amount": 20000}}
-    - Original amount known: "took 600k loan 4 years back" → {{"type": "home_loan", "original_amount": 600000, "years_ago": 4}}
+    - Original amount: "took 600k loan 4 years back" → {{"type": "home_loan", "original_amount": 600000, "years_ago": 4}}
+    - Start year: "started mortgage in 2020" → {{"type": "home_loan", "start_year": 2020}}
+    - Remaining time: "25 years left on the loan" → {{"type": "home_loan", "tenure_months": 300}}
+    - Original term: "originally a 30-year loan" → {{"type": "home_loan", "original_term_years": 30}}
     - Combined: "600k loan 4 years back, 6% rate, 2k EMI, 25 years left" → {{"type": "home_loan", "original_amount": 600000, "years_ago": 4, "interest_rate": 6, "monthly_payment": 2000, "tenure_months": 300}}
-  * IMPORTANT: Extract whatever info is provided, even if incomplete. The system will ask for missing details.
+    - Not sure current balance: "not sure what's left, took 500k 5 years ago, was 30-year loan" → {{"type": "home_loan", "original_amount": 500000, "years_ago": 5, "original_term_years": 30}}
+  * IMPORTANT: Extract whatever timeline info is provided. System will calculate missing values.
   * IMPORTANT: If user says "not sure about current balance BUT took X loan Y years back", still extract original_amount and years_ago
   * If user says "I don't know" or "not sure" about specific field → omit that field (don't include it)
 - no_other_debts (boolean: true if user confirms they have no other debts)
@@ -1566,34 +1634,34 @@ Extract any of these fields if mentioned:
   * If user says "I don't know" or "not sure" → "not_provided"
 - job_stability (stable/casual/contract)
   * If user says "I don't know" or "not sure" → "not_provided"
-- life_insurance (object with provider, coverage_amount, monthly_premium, notes)
+- life_insurance (object with has_coverage, provider, coverage_amount, monthly_premium, notes)
+  * has_coverage (boolean): Whether user has life insurance
+    - If user says "No, I don't have life insurance" → {{"has_coverage": false}}
+    - If user says "yes I have life insurance" → {{"has_coverage": true}}
   * provider (string): Insurance company name
-    - If user says "I have life insurance with AMP" → {{"provider": "AMP"}}
-    - If user says "I don't know" → {{"provider": "not_provided"}}
+    - If user says "I have life insurance with AMP" → {{"has_coverage": true, "provider": "AMP"}}
+    - If user says "through my employer" or "work provides it" → {{"has_coverage": true, "provider": "employer"}}
   * coverage_amount (integer): Coverage amount in dollars
     - If user says "$500k coverage" → {{"coverage_amount": 500000}}
-    - If user says "I don't know" → {{"coverage_amount": "not_provided"}}
-  * monthly_premium (integer): Monthly premium cost
-    - If user says "$50 per month" → {{"monthly_premium": 50}}
-    - If user says "I don't know" → {{"monthly_premium": "not_provided"}}
+    - If user says "2 million" → {{"coverage_amount": 2000000}}
+  * monthly_premium (integer): Monthly premium cost (optional)
   * notes (string): Additional context
-    - If user says "I have life insurance but don't know the details" → {{"notes": "Has life insurance but doesn't know details"}}
-  * IMPORTANT: If user says "No, I don't have life insurance" → DO NOT extract this field at all
-  * IMPORTANT: Extract only the fields mentioned. If only provider mentioned, only return provider field.
-- private_health_insurance (object with provider, coverage_amount, monthly_premium, notes)
-  * provider (string): Insurance company or coverage level (basic/bronze/silver/gold)
-    - If user says "I have Bupa gold cover" → {{"provider": "Bupa gold"}}
-    - If user says "I don't know" → {{"provider": "not_provided"}}
-  * coverage_amount (integer): Annual coverage limit if mentioned
-    - If user says "$100k annual limit" → {{"coverage_amount": 100000}}
-    - If user says "I don't know" → {{"coverage_amount": "not_provided"}}
-  * monthly_premium (integer): Monthly premium cost
-    - If user says "$200 per month" → {{"monthly_premium": 200}}
-    - If user says "I don't know" → {{"monthly_premium": "not_provided"}}
+  * IMPORTANT: ALWAYS extract this field when user answers about life insurance, even if "no"
+  * If user says "no life insurance" → {{"has_coverage": false}}
+- private_health_insurance (object with has_coverage, provider, coverage_type, monthly_premium, notes)
+  * has_coverage (boolean): Whether user has private health insurance
+    - If user says "No, I don't have private health" → {{"has_coverage": false}}
+    - If user says "yes" or "I have PHI" → {{"has_coverage": true}}
+  * provider (string): Insurance company
+    - If user says "Bupa" → {{"has_coverage": true, "provider": "Bupa"}}
+    - If user says "through employer" → {{"has_coverage": true, "provider": "employer"}}
+  * coverage_type (string): Coverage level (basic/bronze/silver/gold/hospital/extras)
+    - If user says "gold cover" → {{"coverage_type": "gold"}}
+    - If user says "hospital only" → {{"coverage_type": "hospital"}}
+  * monthly_premium (integer): Monthly premium cost (optional)
   * notes (string): Additional context
-    - If user says "I have private health but can't remember the provider" → {{"notes": "Has private health but doesn't know provider"}}
-  * IMPORTANT: If user says "No, I don't have private health insurance" → DO NOT extract this field at all
-  * IMPORTANT: Extract only the fields mentioned. If only provider mentioned, only return provider field.
+  * IMPORTANT: ALWAYS extract this field when user answers about health insurance, even if "no"
+  * If user says "no private health" → {{"has_coverage": false}}
 - superannuation (object with balance, employer_contribution_rate, personal_contribution_rate, notes)
   * balance (integer): Current super balance in dollars
     - If user says "45k in super" → {{"balance": 45000}}
@@ -1928,23 +1996,29 @@ def sync_determine_required_info(db_url: str, session_id: str) -> dict:
                                     "document_type": "superannuation_statement"
                                 }
 
-                # Special handling for life_insurance - just needs a record to exist (any field populated)
+                # Special handling for life_insurance - answered if has_coverage is set (true or false) or any data exists
                 elif field == "life_insurance":
                     if isinstance(value, dict):
-                        has_any_data = any(
+                        # If has_coverage is explicitly set (even to false), field is answered
+                        if "has_coverage" in value:
+                            populated_fields.append(field)
+                        # Also check for any other data
+                        elif any(
                             value.get(f) is not None and value.get(f) != "not_provided"
                             for f in ["provider", "coverage_amount", "monthly_premium"]
-                        )
-                        if has_any_data:
+                        ):
                             populated_fields.append(field)
-                # Special handling for private_health_insurance - just needs a record to exist (any field populated)
+                # Special handling for private_health_insurance - answered if has_coverage is set or any data exists
                 elif field == "private_health_insurance":
                     if isinstance(value, dict):
-                        has_any_data = any(
+                        # If has_coverage is explicitly set (even to false), field is answered
+                        if "has_coverage" in value:
+                            populated_fields.append(field)
+                        # Also check for any other data
+                        elif any(
                             value.get(f) is not None and value.get(f) != "not_provided"
-                            for f in ["provider", "coverage_amount", "monthly_premium"]
-                        )
-                        if has_any_data:
+                            for f in ["provider", "coverage_amount", "monthly_premium", "coverage_type"]
+                        ):
                             populated_fields.append(field)
                 elif isinstance(value, dict) and any(v is not None for v in value.values()):
                     populated_fields.append(field)

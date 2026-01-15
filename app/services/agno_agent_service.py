@@ -116,25 +116,58 @@ class AgnoAgentService:
             # Investments
             investments = store.get("investments", [])
             if investments:
-                inv_items = []
-                for inv in investments:
-                    if inv.get("type") and inv.get("type") != "none":
-                        inv_str = f"{inv['type']}"
-                        if inv.get("value"):
-                            inv_str += f": ${inv['value']:,.0f}"
-                        inv_items.append(inv_str)
-                if inv_items:
-                    parts.append(f"Investments: {'; '.join(inv_items)}")
+                # Check if user said "no investments"
+                has_no_investments = any(inv.get("type") == "none" for inv in investments)
+                if has_no_investments:
+                    parts.append("Investments: None (user confirmed no investments) - DO NOT ask about investments again")
+                else:
+                    inv_items = []
+                    for inv in investments:
+                        if inv.get("type") and inv.get("type") != "none":
+                            inv_str = f"{inv['type']}"
+                            if inv.get("value"):
+                                inv_str += f": ${inv['value']:,.0f}"
+                            elif inv.get("amount"):
+                                inv_str += f": ${inv['amount']:,.0f}"
+                            inv_items.append(inv_str)
+                    if inv_items:
+                        parts.append(f"Investments: {'; '.join(inv_items)} - DO NOT ask about investments again")
 
             # Superannuation
             super_data = store.get("superannuation", {})
             if super_data and super_data.get("balance"):
                 parts.append(f"Superannuation: ${super_data['balance']:,.0f}")
 
+            # Life Insurance
+            life_ins = store.get("life_insurance", {})
+            if life_ins:
+                if life_ins.get("has_coverage") is False:
+                    parts.append("Life insurance: None (user confirmed) - DO NOT ask about life insurance again")
+                elif life_ins.get("has_coverage") is True or life_ins.get("provider") or life_ins.get("coverage_amount"):
+                    ins_parts = []
+                    if life_ins.get("provider"):
+                        ins_parts.append(f"provider: {life_ins['provider']}")
+                    if life_ins.get("coverage_amount"):
+                        ins_parts.append(f"${life_ins['coverage_amount']:,.0f} coverage")
+                    parts.append(f"Life insurance: {', '.join(ins_parts) if ins_parts else 'Yes (has coverage)'} - DO NOT ask about life insurance again")
+
+            # Private Health Insurance
+            health_ins = store.get("private_health_insurance", {})
+            if health_ins:
+                if health_ins.get("has_coverage") is False:
+                    parts.append("Private health insurance: None (user confirmed) - DO NOT ask about PHI again")
+                elif health_ins.get("has_coverage") is True or health_ins.get("provider") or health_ins.get("coverage_type"):
+                    ins_parts = []
+                    if health_ins.get("provider"):
+                        ins_parts.append(f"provider: {health_ins['provider']}")
+                    if health_ins.get("coverage_type"):
+                        ins_parts.append(f"{health_ins['coverage_type']} cover")
+                    parts.append(f"Private health insurance: {', '.join(ins_parts) if ins_parts else 'Yes (has coverage)'} - DO NOT ask about PHI again")
+
             # Other info
             if store.get("marital_status"):
                 parts.append(f"Marital status: {store['marital_status']}")
-            if store.get("dependents"):
+            if store.get("dependents") is not None:
                 parts.append(f"Dependents: {store['dependents']}")
             if store.get("job_stability"):
                 parts.append(f"Job stability: {store['job_stability']}")
@@ -159,6 +192,24 @@ class AgnoAgentService:
                 parts.append(f"SKIPPED (user will answer later): {', '.join(skipped_fields)}")
             if not_provided_fields:
                 parts.append(f"USER DOESN'T KNOW: {', '.join(not_provided_fields)}")
+
+            # Build comprehensive "ALREADY ANSWERED" list
+            answered_fields = []
+            for field_name, state_info in field_states.items():
+                if isinstance(state_info, dict) and state_info.get("state") in ["answered", "corrected"]:
+                    if not field_name.startswith("_"):  # Skip internal fields
+                        answered_fields.append(field_name)
+
+            # Also add fields that have values even if not in field_states
+            value_fields = ["age", "monthly_income", "monthly_expenses", "savings", "emergency_fund",
+                           "marital_status", "dependents", "job_stability", "timeline", "target_amount"]
+            for field in value_fields:
+                if store.get(field) is not None and field not in answered_fields:
+                    answered_fields.append(field)
+
+            if answered_fields:
+                parts.append(f"\n**CRITICAL - ALREADY ANSWERED (DO NOT RE-ASK THESE):** {', '.join(answered_fields)}")
+                parts.append("If you need to reference these values, use the data above. Do NOT ask the user to confirm values you already have.")
 
             if not parts:
                 return ""
