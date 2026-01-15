@@ -613,6 +613,47 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
             # Skip "no debts" placeholder
             if debt.get("type") == "none":
                 continue
+
+            # Calculate current balance if original_amount provided but amount missing
+            amount = debt.get("amount")
+            if not amount and debt.get("original_amount"):
+                original = debt.get("original_amount")
+                years_ago = debt.get("years_ago", 0)
+                rate = debt.get("interest_rate")
+                emi = debt.get("monthly_payment")
+                tenure_remaining = debt.get("tenure_months")
+
+                # If we have enough info, calculate current balance
+                if rate and emi and (years_ago or tenure_remaining):
+                    try:
+                        monthly_rate = rate / 100 / 12
+                        payments_made = years_ago * 12 if years_ago else 0
+
+                        # Calculate current balance using amortization formula
+                        # Balance = P * [(1+r)^n - (1+r)^p] / [(1+r)^n - 1]
+                        # Where P = original, r = monthly rate, n = total payments, p = payments made
+                        if tenure_remaining:
+                            total_payments = payments_made + tenure_remaining
+                        else:
+                            # Estimate total term from original loan
+                            total_payments = payments_made + int(tenure_remaining or 300)  # Default 25 years
+
+                        if monthly_rate > 0:
+                            factor = (1 + monthly_rate) ** total_payments
+                            factor_p = (1 + monthly_rate) ** payments_made
+                            amount = original * (factor - factor_p) / (factor - 1)
+                            logger.info(f"[UPDATE_STORE] Calculated current balance: {amount:.0f} from original {original}, {years_ago} years ago")
+                        else:
+                            # No interest - simple calculation
+                            amount = original - (emi * payments_made)
+                    except Exception as e:
+                        logger.warning(f"[UPDATE_STORE] Could not calculate balance: {e}, using original amount")
+                        amount = original
+                else:
+                    # Not enough info to calculate, use original as estimate
+                    amount = original
+                    logger.info(f"[UPDATE_STORE] Using original amount as estimate: {amount}")
+
             # Check if similar liability already exists
             existing = session.execute(
                 select(Liability).where(
@@ -623,7 +664,8 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
 
             if existing:
                 # Update existing - include all debt fields
-                existing.amount = debt.get("amount", existing.amount)
+                if amount:
+                    existing.amount = amount
                 existing.interest_rate = debt.get("interest_rate", existing.interest_rate)
                 existing.monthly_payment = debt.get("monthly_payment", existing.monthly_payment)
                 existing.tenure_months = debt.get("tenure_months", existing.tenure_months)
@@ -636,14 +678,14 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
                     user_id=user.id,
                     liability_type=debt.get("type", "unknown"),
                     description=debt.get("type", "Debt"),
-                    amount=debt.get("amount"),
+                    amount=amount,
                     interest_rate=debt.get("interest_rate"),
                     monthly_payment=debt.get("monthly_payment"),
                     tenure_months=debt.get("tenure_months"),
                     institution=debt.get("institution"),
                 )
                 session.add(new_liability)
-                logger.debug(f"[UPDATE_STORE] Created liability: {debt.get('type')} - amount={debt.get('amount')}, rate={debt.get('interest_rate')}, monthly={debt.get('monthly_payment')}, tenure={debt.get('tenure_months')}")
+                logger.debug(f"[UPDATE_STORE] Created liability: {debt.get('type')} - amount={amount}, rate={debt.get('interest_rate')}, monthly={debt.get('monthly_payment')}, tenure={debt.get('tenure_months')}")
 
     # Handle hecs_debt -> Liability table
     if "hecs_debt" in updates and updates["hecs_debt"]:
@@ -1483,13 +1525,18 @@ Extract any of these fields if mentioned:
   * interest_rate: annual interest rate as percentage (e.g., 8 for 8%)
   * monthly_payment: EMI/monthly repayment amount
   * tenure_months: loan term in months (e.g., 3 years = 36 months)
+  * original_amount: original loan amount when taken (useful if current balance unknown)
+  * years_ago: how many years ago the loan was taken
   * EXAMPLES:
     - Full info: "30k personal loan at 8% with 900 EMI for 3 years" → {{"type": "personal_loan", "amount": 30000, "interest_rate": 8, "monthly_payment": 900, "tenure_months": 36}}
     - Partial info: "I have a personal loan" → {{"type": "personal_loan"}} (amount missing - agent should ask)
     - Partial info: "personal loan of 30k" → {{"type": "personal_loan", "amount": 30000}} (rate/tenure missing - agent should ask)
     - Credit card: "5k on credit card" → {{"type": "credit_card", "amount": 5000}}
     - HECS: "20k HECS debt" → {{"type": "hecs", "amount": 20000}}
+    - Original amount known: "took 600k loan 4 years back" → {{"type": "home_loan", "original_amount": 600000, "years_ago": 4}}
+    - Combined: "600k loan 4 years back, 6% rate, 2k EMI, 25 years left" → {{"type": "home_loan", "original_amount": 600000, "years_ago": 4, "interest_rate": 6, "monthly_payment": 2000, "tenure_months": 300}}
   * IMPORTANT: Extract whatever info is provided, even if incomplete. The system will ask for missing details.
+  * IMPORTANT: If user says "not sure about current balance BUT took X loan Y years back", still extract original_amount and years_ago
   * If user says "I don't know" or "not sure" about specific field → omit that field (don't include it)
 - no_other_debts (boolean: true if user confirms they have no other debts)
   * "no other debts" or "that's all" or "that's it" or "nothing else" → true
