@@ -221,17 +221,18 @@ class AuthService:
         saved_user = await self.user_repository.save(user_data)
 
         # 6. Create KMS key for the new user (non-blocking on failure)
-        kms_service = self._get_kms_service()
-        if kms_service and saved_user.get('id'):
-            try:
-                await kms_service.create_and_save_user_key(
-                    user_id=saved_user['id'],
-                    user_email=pending['email']
-                )
-                print(f"[Auth] Created KMS key for user {saved_user['id']}")
-            except Exception as e:
-                # Log error but don't block signup - KMS key can be created later
-                print(f"[Auth] Warning: Failed to create KMS key for user {saved_user['id']}: {e}")
+        # NOTE: KMS key creation disabled - uncomment when needed
+        # kms_service = self._get_kms_service()
+        # if kms_service and saved_user.get('id'):
+        #     try:
+        #         await kms_service.create_and_save_user_key(
+        #             user_id=saved_user['id'],
+        #             user_email=pending['email']
+        #         )
+        #         print(f"[Auth] Created KMS key for user {saved_user['id']}")
+        #     except Exception as e:
+        #         # Log error but don't block signup - KMS key can be created later
+        #         print(f"[Auth] Warning: Failed to create KMS key for user {saved_user['id']}: {e}")
 
         # 7. Generate tokens
         tokens = self._generate_tokens(pending['email'], user_id=saved_user.get('id'))
@@ -323,20 +324,21 @@ class AuthService:
         await self.user_repository.reset_failed_attempts(email)
 
         # Ensure user has a KMS key (for existing users who don't have one)
+        # NOTE: KMS key creation disabled - uncomment when needed
         user_id = final_user.get('id')
-        if user_id:
-            kms_service = self._get_kms_service()
-            if kms_service:
-                try:
-                    existing_key = await kms_service.get_user_key(user_id)
-                    if not existing_key:
-                        await kms_service.create_and_save_user_key(
-                            user_id=user_id,
-                            user_email=email
-                        )
-                        print(f"[Auth] Created KMS key for existing user {user_id}")
-                except Exception as e:
-                    print(f"[Auth] Warning: Failed to create/check KMS key for user {user_id}: {e}")
+        # if user_id:
+        #     kms_service = self._get_kms_service()
+        #     if kms_service:
+        #         try:
+        #             existing_key = await kms_service.get_user_key(user_id)
+        #             if not existing_key:
+        #                 await kms_service.create_and_save_user_key(
+        #                     user_id=user_id,
+        #                     user_email=email
+        #                 )
+        #                 print(f"[Auth] Created KMS key for existing user {user_id}")
+        #         except Exception as e:
+        #             print(f"[Auth] Warning: Failed to create/check KMS key for user {user_id}: {e}")
 
         tokens = self._generate_tokens(email, user_id=user_id)
 
