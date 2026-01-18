@@ -12,6 +12,7 @@ from app.services.profile_extractor import ProfileExtractor
 from app.services.intelligence_service import IntelligenceService
 from app.services.document_agent_service import DocumentAgentService
 from app.services.visualization_service import VisualizationService
+from app.services.summary_extractor import SummaryExtractor
 from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.advice import (
@@ -101,6 +102,8 @@ class AdviceService:
         self._holistic_snapshot_sent: Set[str] = set()
         # Track last agent question for context passing to extraction tool
         self._last_agent_questions: dict[str, str] = {}
+        # Track message count per user for triggering summary extraction every 3rd message
+        self._message_counters: dict[str, int] = {}
 
     @property
     def _use_tool_based_agent(self) -> bool:
@@ -852,6 +855,19 @@ class AdviceService:
                         )
                     )
 
+                # Increment message counter and trigger summary extraction every 3rd message
+                self._message_counters[username] = self._message_counters.get(username, 0) + 1
+                current_count = self._message_counters[username]
+                logger.debug(f"[SUMMARY_EXTRACT] Message count for {username}: {current_count}")
+                print("✅✅✅ Counters:",{self._message_counters.get(username, 0)})
+                print("✅✅✅ Current Count:",{current_count})
+                # Trigger extraction every 3rd message
+                if current_count % 3 == 0:
+                    logger.info(f"[SUMMARY_EXTRACT] Triggering extraction at message {current_count}")
+                    asyncio.create_task(
+                        self._extract_from_session_summary(username, session_id)
+                    )
+
                 # Log agent tool usage if available
                 if hasattr(response, 'tools_used'):
                     logger.info(f"[TOOL_AGENT] Tools used: {response.tools_used}")
@@ -907,6 +923,78 @@ class AdviceService:
                 logger.debug(f"[PROFILE] No extraction result for {username}")
         except Exception as e:
             logger.error(f"[PROFILE] Extraction error (background): {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def _extract_from_session_summary(
+        self,
+        username: str,
+        session_id: str
+    ) -> None:
+        """
+        Extract facts from Agno session summary and update DB (background task).
+        
+        This runs every 3rd message to keep the database in sync with conversation
+        without adding latency to the user's experience.
+        
+        Args:
+            username: User's email/username
+            session_id: Agno session ID (e.g., "chat-{username}")
+        """
+        try:
+            logger.info(f"[SUMMARY_EXTRACT] Starting extraction for {username}")
+            
+            # Create a new session for this background task
+            async for session in self.db_manager.get_session():
+                # Step 1: Get the agent to access session summary
+                print(f"✅✅✅ [DEBUG] Getting agent for username: {username}")
+                agent = await self.agent_service.get_agent_with_session(username, session)
+                print(f"✅✅✅ [DEBUG] Agent retrieved")
+                
+                # Step 2: Get session summary from Agno
+                try:
+                    print(f"✅✅✅ [DEBUG] Calling get_session_summary with session_id: {session_id}")
+                    summary_obj = agent.get_session_summary(session_id=session_id)
+                    print(f"✅✅✅ [DEBUG] Summary object: {summary_obj}")
+                except Exception as e:
+                    logger.warning(f"[SUMMARY_EXTRACT] Failed to get session summary: {e}")
+                    return
+                
+                # Step 3: Check if summary exists and has content
+                if not summary_obj:
+                    logger.debug(f"[SUMMARY_EXTRACT] No session summary available yet for {username}")
+                    return
+                
+                summary_text = summary_obj.summary if hasattr(summary_obj, 'summary') else str(summary_obj)
+                
+                if not summary_text or not summary_text.strip():
+                    logger.debug(f"[SUMMARY_EXTRACT] Empty summary for {username}")
+                    return
+                
+                logger.info(f"[SUMMARY_EXTRACT] Got summary ({len(summary_text)} chars) for {username}")
+                
+                # Step 4: Extract and update using SummaryExtractor
+                extractor = SummaryExtractor()
+                
+                result = await extractor.update_user_from_summary(
+                    session=session,
+                    username=username,
+                    summary=summary_text
+                )
+                
+                # Step 5: Log results
+                updates = result.get("updates", [])
+                if updates:
+                    logger.info(f"[SUMMARY_EXTRACT] ✅ Made {len(updates)} updates for {username}")
+                    for update in updates[:5]:  # Log first 5 updates
+                        logger.debug(f"[SUMMARY_EXTRACT]   - {update}")
+                else:
+                    logger.info(f"[SUMMARY_EXTRACT] No updates needed for {username}")
+                
+                break  # Exit the session loop after processing
+            
+        except Exception as e:
+            logger.error(f"[SUMMARY_EXTRACT] Error extracting from summary for {username}: {e}")
             import traceback
             traceback.print_exc()
 
