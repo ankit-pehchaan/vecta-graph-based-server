@@ -258,9 +258,17 @@ Respond with JSON containing ONLY fields with concrete values:"""
                 else:
                     print(f"✅✅✅ [EXTRACTOR]   ⏭️  Skipped {fact_key}: already set to {current_value}")
         
-        # Handle savings -> Asset table (always sync)
+        # Handle savings -> Asset table AND User field (always sync both)
         if "savings" in facts and is_valid_number(facts["savings"]):
             savings_value = float(facts["savings"])
+            
+            # Update User.savings field (always sync)
+            if user.savings != savings_value:
+                user.savings = savings_value
+                updates_made.append(f"savings_user: ${savings_value} (updated)")
+                print(f"✅✅✅ [EXTRACTOR]   ✓ Updated user.savings = ${savings_value}")
+            
+            # Update Asset table
             existing_savings = next((a for a in (user.assets or []) if a.asset_type == "savings"), None)
             
             if existing_savings:
@@ -281,18 +289,26 @@ Respond with JSON containing ONLY fields with concrete values:"""
                 updates_made.append(f"savings_asset: ${savings_value} (created)")
                 print(f"✅✅✅ [EXTRACTOR]   ✓ Created savings_asset = ${savings_value}")
         
-        # Handle emergency_fund -> Asset table
+        # Handle emergency_fund -> Asset table AND User field (always sync both)
         if "emergency_fund" in facts and is_valid_number(facts["emergency_fund"]):
             ef_value = float(facts["emergency_fund"])
+            
+            # Update User.emergency_fund field (always sync)
+            if user.emergency_fund != ef_value:
+                user.emergency_fund = ef_value
+                updates_made.append(f"emergency_fund_user: ${ef_value} (updated)")
+                print(f"✅✅✅ [EXTRACTOR]   ✓ Updated user.emergency_fund = ${ef_value}")
+            
+            # Update Asset table
             existing_ef = next((a for a in (user.assets or []) if a.asset_type == "emergency_fund"), None)
             
             if existing_ef:
                 if existing_ef.value != ef_value:
                     existing_ef.value = ef_value
-                    updates_made.append(f"emergency_fund: ${ef_value} (updated)")
-                    print(f"✅✅✅ [EXTRACTOR]   ✓ Updated emergency_fund = ${ef_value}")
+                    updates_made.append(f"emergency_fund_asset: ${ef_value} (updated)")
+                    print(f"✅✅✅ [EXTRACTOR]   ✓ Updated emergency_fund_asset = ${ef_value}")
                 else:
-                    print(f"✅✅✅ [EXTRACTOR]   ⏭️  Skipped emergency_fund: already ${ef_value}")
+                    print(f"✅✅✅ [EXTRACTOR]   ⏭️  Skipped emergency_fund_asset: already ${ef_value}")
             else:
                 new_asset = Asset(
                     user_id=user.id,
@@ -301,8 +317,8 @@ Respond with JSON containing ONLY fields with concrete values:"""
                     value=ef_value,
                 )
                 session.add(new_asset)
-                updates_made.append(f"emergency_fund: ${ef_value} (created)")
-                print(f"✅✅✅ [EXTRACTOR]   ✓ Created emergency_fund = ${ef_value}")
+                updates_made.append(f"emergency_fund_asset: ${ef_value} (created)")
+                print(f"✅✅✅ [EXTRACTOR]   ✓ Created emergency_fund_asset = ${ef_value}")
         
         # Handle debts -> Liability table
         if "debts" in facts and isinstance(facts["debts"], list):

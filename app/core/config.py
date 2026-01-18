@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     # Visualization (chat)
     VISUALIZATION_ENABLED: bool = Field(default=True, description="Enable in-chat visualization cards")
     
+    SUMMARY_EXTRACTION_ENABLED: bool = Field(default=True, description="Enable summary extraction every 3rd message")
+    
     # Goal Timeline Classification Thresholds (in years)
     # Industry standard: Short-term < 2 years, Medium-term 2-5 years, Long-term > 5 years
     GOAL_TIMELINE_SHORT_YEARS: float = Field(default=2.0, description="Maximum years for short-term goals (< this value)")

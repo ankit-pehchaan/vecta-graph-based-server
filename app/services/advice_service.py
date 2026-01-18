@@ -861,12 +861,15 @@ class AdviceService:
                 logger.debug(f"[SUMMARY_EXTRACT] Message count for {username}: {current_count}")
                 print("✅✅✅ Counters:",{self._message_counters.get(username, 0)})
                 print("✅✅✅ Current Count:",{current_count})
-                # Trigger extraction every 3rd message
-                if current_count % 3 == 0:
+                
+                # Trigger extraction every 3rd message (if feature is enabled)
+                if settings.SUMMARY_EXTRACTION_ENABLED and current_count % 3 == 0:
                     logger.info(f"[SUMMARY_EXTRACT] Triggering extraction at message {current_count}")
                     asyncio.create_task(
                         self._extract_from_session_summary(username, session_id)
                     )
+                elif not settings.SUMMARY_EXTRACTION_ENABLED:
+                    logger.debug(f"[SUMMARY_EXTRACT] Feature disabled, skipping extraction at message {current_count}")
 
                 # Log agent tool usage if available
                 if hasattr(response, 'tools_used'):
