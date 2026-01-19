@@ -221,12 +221,13 @@ Respond with JSON containing ONLY fields with concrete values:"""
             return value.lower().strip() not in invalid_values
         
         # Field mappings: extracted_key -> (db_field, field_type)
+        # Note: savings and emergency_fund are NOT here - they have special handling below
+        # that syncs both User field and Asset table
         field_mappings = {
             "age": ("age", "int"),
             "dependents": ("dependents", "int"),
             "monthly_income": ("monthly_income", "float"),
             "monthly_expenses": ("expenses", "float"),
-            "savings": ("savings", "float"),
             "annual_income": ("income", "float"),
             "marital_status": ("relationship_status", "string"),
             "job_stability": ("job_stability", "string"),
@@ -286,6 +287,7 @@ Respond with JSON containing ONLY fields with concrete values:"""
                     value=savings_value,
                 )
                 session.add(new_asset)
+                user.assets.append(new_asset)  # Append to collection for missing_fields check
                 updates_made.append(f"savings_asset: ${savings_value} (created)")
                 print(f"✅✅✅ [EXTRACTOR]   ✓ Created savings_asset = ${savings_value}")
         
@@ -317,6 +319,7 @@ Respond with JSON containing ONLY fields with concrete values:"""
                     value=ef_value,
                 )
                 session.add(new_asset)
+                user.assets.append(new_asset)  # Append to collection for missing_fields check
                 updates_made.append(f"emergency_fund_asset: ${ef_value} (created)")
                 print(f"✅✅✅ [EXTRACTOR]   ✓ Created emergency_fund_asset = ${ef_value}")
         
@@ -347,6 +350,7 @@ Respond with JSON containing ONLY fields with concrete values:"""
                             interest_rate=float(debt.get("interest_rate")) if is_valid_number(debt.get("interest_rate")) else None,
                         )
                         session.add(liability)
+                        user.liabilities.append(liability)  # Append to collection for missing_fields check
                         updates_made.append(f"debt: {debt_type} ${debt_amount} (created)")
                         print(f"✅✅✅ [EXTRACTOR]   ✓ Created debt: {debt_type} = ${debt_amount}")
         
@@ -367,6 +371,7 @@ Respond with JSON containing ONLY fields with concrete values:"""
                         balance=super_balance,
                     )
                     session.add(new_super)
+                    user.superannuation.append(new_super)  # Append to collection for missing_fields check
                     updates_made.append(f"superannuation: ${super_balance} (created)")
                     print(f"✅✅✅ [EXTRACTOR]   ✓ Created superannuation = ${super_balance}")
         
@@ -394,6 +399,7 @@ Respond with JSON containing ONLY fields with concrete values:"""
                         provider=coverage if isinstance(coverage, str) else None,
                     )
                     session.add(ins)
+                    user.insurance.append(ins)  # Append to collection for missing_fields check
                     updates_made.append(f"life_insurance: {coverage} (created)")
                     print(f"✅✅✅ [EXTRACTOR]   ✓ Created life_insurance = {coverage}")
         
@@ -417,6 +423,7 @@ Respond with JSON containing ONLY fields with concrete values:"""
                         provider=str(health_value),
                     )
                     session.add(ins)
+                    user.insurance.append(ins)  # Append to collection for missing_fields check
                     updates_made.append(f"health_insurance: {health_value} (created)")
                     print(f"✅✅✅ [EXTRACTOR]   ✓ Created health_insurance = {health_value}")
         
