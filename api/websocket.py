@@ -1,0 +1,420 @@
+"""
+WebSocket handler for real-time bidirectional communication.
+"""
+
+import json
+from typing import Any
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+from api.schemas import (
+    WSAnswer,
+    WSCalculation,
+    WSComplete,
+    WSError,
+    WSModeSwitch,
+    WSQuestion,
+    WSResumePrompt,
+    WSScenarioQuestion,
+    WSSessionStart,
+    WSTraversalPaused,
+    WSVisualization,
+    WSGoalQualification,
+    WSGoalUpdate,
+)
+from api.sessions import session_manager
+
+
+def _serialize_goal_state(goal_state: dict[str, Any]) -> dict[str, list]:
+    """Serialize goal state with goal_ids preserved."""
+    qualified = [
+        {"goal_id": goal_id, **(data or {})}
+        for goal_id, data in (goal_state.get("qualified_goals") or {}).items()
+    ]
+    possible = [
+        {"goal_id": goal_id, **(data or {})}
+        for goal_id, data in (goal_state.get("possible_goals") or {}).items()
+    ]
+    rejected = goal_state.get("rejected_goals") or []
+    return {
+        "qualified_goals": qualified,
+        "possible_goals": possible,
+        "rejected_goals": rejected,
+    }
+
+
+async def websocket_handler(websocket: WebSocket, session_id: str | None = None):
+    """
+    Handle WebSocket connection for information gathering session.
+    
+    Flow:
+    1. Client connects with optional session_id
+    2. If no session_id, create new session with optional initial_context
+    3. Send first question
+    4. Receive answers, send questions
+    5. Continue until visited_all
+    """
+    await websocket.accept()
+    
+    orchestrator = None
+    
+    is_resuming = False
+    
+    try:
+        # If session_id provided, get existing session
+        if session_id:
+            orchestrator = session_manager.get_session(session_id)
+            if not orchestrator:
+                await websocket.send_json(
+                    WSError(message=f"Session {session_id} not found").model_dump()
+                )
+                await websocket.close()
+                return
+            is_resuming = True  # Mark as resume - don't call start()
+        
+        # If no session, wait for initial_context
+        if not orchestrator:
+            # Wait for initial message with optional initial_context
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+                initial_context = message.get("initial_context") or message.get("user_goal")
+                
+                # Create new session (initial_context is optional)
+                session_id = session_manager.create_session(initial_context)
+                orchestrator = session_manager.get_session(session_id)
+                
+                if not orchestrator:
+                    await websocket.send_json(
+                        WSError(message="Failed to create session").model_dump()
+                    )
+                    await websocket.close()
+                    return
+                
+                # Send session start confirmation
+                await websocket.send_json(
+                    WSSessionStart(
+                        session_id=session_id,
+                        initial_context=initial_context,
+                    ).model_dump()
+                )
+            except json.JSONDecodeError:
+                await websocket.send_json(
+                    WSError(message="Invalid JSON in initial message").model_dump()
+                )
+                await websocket.close()
+                return
+        
+        # Start collection - send first question or handle calculation/visualization
+        # Skip start() if resuming an existing session - just wait for user messages
+        if is_resuming:
+            # For resumed sessions, just send a ready signal and go straight to message loop
+            # The frontend already has the conversation history from localStorage
+            pass
+        else:
+            # New session - call start() to send first question
+            try:
+                result = orchestrator.start()
+                mode = result.get("mode", "data_gathering")
+                
+                # Handle different modes from start()
+                if mode == "calculation":
+                    # Send calculation results
+                    await websocket.send_json(
+                        WSCalculation(
+                            calculation_type=result["calculation_type"],
+                            result=result.get("result", {}),
+                            can_calculate=result["can_calculate"],
+                            missing_data=result.get("missing_data", []),
+                            message=result["message"],
+                            data_used=result.get("data_used", []),
+                        ).model_dump()
+                    )
+                    # If calculation succeeded, send resume prompt
+                    if result.get("can_calculate") and result.get("resume_prompt"):
+                        await websocket.send_json(
+                            WSResumePrompt(message=result["resume_prompt"]).model_dump()
+                        )
+                elif mode == "visualization":
+                    # Send visualization data
+                    await websocket.send_json(
+                        WSVisualization(
+                            chart_type=result["chart_type"],
+                            data=result.get("data", {}),
+                            title=result["title"],
+                            description=result["description"],
+                            config=result.get("config", {}),
+                        ).model_dump()
+                    )
+                    # Send resume prompt after visualization
+                    if result.get("resume_prompt"):
+                        await websocket.send_json(
+                            WSResumePrompt(message=result["resume_prompt"]).model_dump()
+                        )
+                    elif mode == "calculation_visualization":
+                        # Send calculation first
+                        await websocket.send_json(
+                            WSCalculation(
+                                calculation_type=result["calculation_type"],
+                                result=result.get("result", {}),
+                                can_calculate=result["can_calculate"],
+                                missing_data=result.get("missing_data", []),
+                                message=result["message"],
+                                data_used=result.get("data_used", []),
+                            ).model_dump()
+                        )
+                        # Then send visualization if calculation succeeded AND visualization data exists
+                        if result.get("can_calculate") and "chart_type" in result:
+                            await websocket.send_json(
+                                WSVisualization(
+                                    chart_type=result["chart_type"],
+                                    data=result.get("data", {}),
+                                    title=result.get("title", ""),
+                                    description=result.get("description", ""),
+                                    config=result.get("config", {}),
+                                ).model_dump()
+                            )
+                            # Send resume prompt
+                            if result.get("resume_prompt"):
+                                await websocket.send_json(
+                                    WSResumePrompt(message=result["resume_prompt"]).model_dump()
+                                )
+                        elif result.get("can_calculate"):
+                            # Calculation succeeded but no visualization - send resume prompt
+                            if result.get("resume_prompt"):
+                                await websocket.send_json(
+                                    WSResumePrompt(message=result["resume_prompt"]).model_dump()
+                                )
+                elif mode == "goal_qualification":
+                    await websocket.send_json(
+                        WSGoalQualification(
+                            question=result.get("question", ""),
+                            goal_id=result.get("goal_id", ""),
+                            goal_description=result.get("goal_description"),
+                        ).model_dump()
+                    )
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
+                        await websocket.send_json(
+                            WSGoalUpdate(**goal_state).model_dump()
+                        )
+                elif mode == "scenario_framing":
+                    # Scenario framing for inferred goals
+                    scenario_ctx = result.get("scenario_context", {})
+                    await websocket.send_json(
+                        WSScenarioQuestion(
+                            question=result.get("question", ""),
+                            goal_id=scenario_ctx.get("goal_id", ""),
+                            goal_description=scenario_ctx.get("goal_description"),
+                            turn=scenario_ctx.get("turn", 1),
+                            max_turns=scenario_ctx.get("max_turns", 3),
+                            goal_confirmed=scenario_ctx.get("goal_confirmed"),
+                            goal_rejected=scenario_ctx.get("goal_rejected"),
+                        ).model_dump()
+                    )
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
+                        await websocket.send_json(
+                            WSGoalUpdate(**goal_state).model_dump()
+                        )
+                else:
+                    # Normal data gathering mode
+                    # Send mode switch notification if needed
+                    if mode != "data_gathering":
+                        await websocket.send_json(
+                            WSModeSwitch(
+                                mode=mode,
+                                previous_mode=None,
+                            ).model_dump()
+                        )
+                    await websocket.send_json(
+                        WSQuestion(
+                            question=result.get("question"),
+                            node_name=result.get("node_name", ""),
+                            extracted_data=result.get("extracted_data", {}),
+                            complete=result.get("complete", False),
+                            upcoming_nodes=result.get("upcoming_nodes", []),
+                            all_collected_data=orchestrator.graph_memory.get_all_nodes_data(),
+                            planned_target_node=result.get("planned_target_node"),
+                            planned_target_field=result.get("planned_target_field"),
+                        ).model_dump()
+                    )
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
+                        await websocket.send_json(
+                            WSGoalUpdate(**goal_state).model_dump()
+                        )
+            except Exception as e:
+                await websocket.send_json(
+                    WSError(message=f"Failed to start session: {str(e)}").model_dump()
+                )
+                await websocket.close()
+                return
+        
+        # Main loop: receive answers, send questions
+        while True:
+            # Receive user answer
+            data = await websocket.receive_text()
+            
+            try:
+                message = json.loads(data)
+                answer_msg = WSAnswer(**message)
+                
+                if answer_msg.type != "answer":
+                    await websocket.send_json(
+                        WSError(message=f"Expected 'answer' message, got '{answer_msg.type}'").model_dump()
+                    )
+                    continue
+                
+                # Process response with error handling
+                try:
+                    result = orchestrator.respond(answer_msg.answer)
+                except RuntimeError as e:
+                    # Agent parsing failed, ask user to rephrase
+                    await websocket.send_json(
+                        WSError(
+                            message=f"I had trouble understanding that. Could you please rephrase? ({str(e)})"
+                        ).model_dump()
+                    )
+                    continue
+                except Exception as e:
+                    await websocket.send_json(
+                        WSError(message=f"Error processing response: {str(e)}").model_dump()
+                    )
+                    continue
+                
+                # Handle different modes
+                mode = result.get("mode", "data_gathering")
+                
+                if mode == "goal_qualification":
+                    await websocket.send_json(
+                        WSGoalQualification(
+                            question=result.get("question", ""),
+                            goal_id=result.get("goal_id", ""),
+                            goal_description=result.get("goal_description"),
+                        ).model_dump()
+                    )
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
+                        await websocket.send_json(
+                            WSGoalUpdate(**goal_state).model_dump()
+                        )
+                    continue
+
+                if mode == "visualization":
+                    # Send calculation results first
+                    await websocket.send_json(
+                        WSCalculation(
+                            calculation_type=result["calculation_type"],
+                            result=result.get("result", {}),
+                            can_calculate=result["can_calculate"],
+                            missing_data=result.get("missing_data", []),
+                            message=result["message"],
+                            data_used=result.get("data_used", []),
+                        ).model_dump()
+                    )
+                    
+                    # Then send visualization if calculation succeeded AND chart data exists
+                    if result.get("can_calculate") and "chart_type" in result and result.get("chart_type"):
+                        await websocket.send_json(
+                            WSVisualization(
+                                chart_type=result["chart_type"],
+                                data=result.get("data", {}),
+                                title=result.get("title", ""),
+                                description=result.get("description", ""),
+                                config=result.get("config", {}),
+                            ).model_dump()
+                        )
+                    
+                    # Send resume prompt if calculation succeeded
+                    if result.get("can_calculate") and result.get("resume_prompt"):
+                        await websocket.send_json(
+                            WSResumePrompt(message=result["resume_prompt"]).model_dump()
+                        )
+                    # If missing data, traversal might be paused
+                    elif not result.get("can_calculate") and orchestrator.traversal_paused:
+                        await websocket.send_json(
+                            WSTraversalPaused(
+                                paused_node=orchestrator.paused_node,
+                                message="Traversal paused. Please provide the missing data to complete the calculation.",
+                            ).model_dump()
+                        )
+                
+                elif mode == "scenario_framing":
+                    # Scenario framing for inferred goals
+                    scenario_ctx = result.get("scenario_context", {})
+                    await websocket.send_json(
+                        WSScenarioQuestion(
+                            question=result.get("question", ""),
+                            goal_id=scenario_ctx.get("goal_id", ""),
+                            goal_description=scenario_ctx.get("goal_description"),
+                            turn=scenario_ctx.get("turn", 1),
+                            max_turns=scenario_ctx.get("max_turns", 3),
+                            goal_confirmed=scenario_ctx.get("goal_confirmed"),
+                            goal_rejected=scenario_ctx.get("goal_rejected"),
+                        ).model_dump()
+                    )
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
+                        await websocket.send_json(
+                            WSGoalUpdate(**goal_state).model_dump()
+                        )
+                
+                elif mode == "data_gathering":
+                    # Send the question/response with complete flag
+                    # complete=True means phase1 is done (source of truth: phase1_complete)
+                    await websocket.send_json(
+                        WSQuestion(
+                            question=result.get("question"),
+                            node_name=result.get("node_name", ""),
+                            extracted_data=result.get("extracted_data", {}),
+                            complete=result.get("complete", False),  # This is phase1_complete
+                            upcoming_nodes=result.get("upcoming_nodes", []),
+                            all_collected_data=orchestrator.graph_memory.get_all_nodes_data(),
+                            planned_target_node=result.get("planned_target_node"),
+                            planned_target_field=result.get("planned_target_field"),
+                        ).model_dump()
+                    )
+                    
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
+                        await websocket.send_json(
+                            WSGoalUpdate(**goal_state).model_dump()
+                        )
+                    
+                    # If phase1 complete, we can keep the connection open for visualizations
+                    # No need to send separate WSComplete - complete flag in WSQuestion is enough
+                
+                elif mode == "new_goal":
+                    # New goal requested
+                    await websocket.send_json(
+                        WSError(message="Starting a new goal requires creating a new session. Please refresh and start again.").model_dump()
+                    )
+                
+                else:
+                    # Unknown mode - send error
+                    await websocket.send_json(
+                        WSError(message=f"Unknown mode: {mode}. Please continue with data gathering or request a calculation/visualization.").model_dump()
+                    )
+            
+            except json.JSONDecodeError:
+                await websocket.send_json(
+                    WSError(message="Invalid JSON format").model_dump()
+                )
+            except Exception as e:
+                await websocket.send_json(
+                    WSError(message=f"Error processing message: {str(e)}").model_dump()
+                )
+    
+    except WebSocketDisconnect:
+        # Client disconnected - cleanup handled by session manager
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json(
+                WSError(message=f"Unexpected error: {str(e)}").model_dump()
+            )
+        except:
+            pass
+        await websocket.close()
+
