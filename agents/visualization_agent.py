@@ -104,7 +104,7 @@ class VisualizationAgent:
             instructions=prompt_template,
             output_schema=VisualizationResponse,
             markdown=False,
-            debug_mode=True,
+            debug_mode=False,
             use_json_mode=True
         )
         

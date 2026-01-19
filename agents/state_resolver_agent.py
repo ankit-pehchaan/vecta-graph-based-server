@@ -106,7 +106,7 @@ class StateResolverAgent:
                 instructions=prompt,
                 output_schema=StateResolverResponse,
                 markdown=False,
-                debug_mode=True,
+                debug_mode=False,
                 use_json_mode=True,
             )
         else:

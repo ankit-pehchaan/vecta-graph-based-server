@@ -175,7 +175,7 @@ class ConversationAgent:
                 enable_session_summaries=True,    # Condenses older messages into summaries
                 add_session_summary_to_context=True,  # Adds summary to agent context
                 markdown=False,
-                debug_mode=True,
+                debug_mode=False,
                 use_json_mode=True,
             )
         else:
