@@ -2,14 +2,90 @@
 
 This is pure logic with no database calls - it analyzes financial facts and
 determines if they should trigger a goal discovery probe.
+
+IMPORTANT: Goal details are only probed AFTER baseline information is collected.
 """
 
 from typing import Any
 
 
+# Core baseline fields that must be collected before probing goal details
+BASELINE_FIELDS_FOR_PROBING = [
+    "age",
+    "monthly_income",
+    "monthly_expenses",
+]
+
+# Extended baseline for more thorough checks (optional)
+EXTENDED_BASELINE_FIELDS = [
+    "age",
+    "monthly_income",
+    "monthly_expenses",
+    "emergency_fund",
+    "debts",
+]
+
+
+def is_baseline_complete(user_context: dict, strict: bool = False) -> bool:
+    """
+    Check if baseline information is complete enough to start goal probing.
+
+    Args:
+        user_context: Current user store/profile
+        strict: If True, requires extended baseline fields
+
+    Returns:
+        True if baseline is complete, False otherwise
+    """
+    required_fields = EXTENDED_BASELINE_FIELDS if strict else BASELINE_FIELDS_FOR_PROBING
+
+    for field in required_fields:
+        value = user_context.get(field)
+        # Field is missing or explicitly None/empty
+        if value is None:
+            return False
+        # For numeric fields, 0 might be valid (e.g., no debts)
+        # but empty strings/lists are not valid
+        if isinstance(value, str) and not value.strip():
+            return False
+        if isinstance(value, list) and len(value) == 0 and field not in ["debts"]:
+            # Empty debts list is valid (no debts)
+            return False
+
+    return True
+
+
+def get_baseline_status(user_context: dict) -> dict:
+    """
+    Get detailed status of baseline fields.
+
+    Returns:
+        dict with 'complete', 'missing_fields', and 'collected_fields'
+    """
+    missing = []
+    collected = []
+
+    for field in EXTENDED_BASELINE_FIELDS:
+        value = user_context.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(field)
+        else:
+            collected.append(field)
+
+    return {
+        "complete": len(missing) == 0,
+        "missing_fields": missing,
+        "collected_fields": collected,
+        "progress": f"{len(collected)}/{len(EXTENDED_BASELINE_FIELDS)}"
+    }
+
+
 def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict) -> dict:
     """
     Determines if a financial fact should trigger goal discovery probing.
+
+    IMPORTANT: Only probes for goal details AFTER baseline information is collected.
+    This ensures we understand the user's financial foundation before diving into goals.
 
     Args:
         field_name: The field that was just extracted (e.g., "debts", "emergency_fund")
@@ -25,7 +101,31 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
             - track_if_denied: bool (track as critical_concern even if user says no)
             - denial_note: str (note to add if user denies)
             - probe_category: str (category for rate limiting - "insurance", "savings", "goals")
+            - baseline_incomplete: bool (if True, baseline needs to be collected first)
     """
+
+    # Default response (no probing needed)
+    no_probe = {
+        "should_probe": False,
+        "probe_question": None,
+        "potential_goal": None,
+        "priority": None,
+        "track_if_denied": False,
+        "denial_note": None,
+        "baseline_incomplete": False
+    }
+
+    # =========================================================================
+    # BASELINE CHECK: Don't probe for goals until we have core financial info
+    # =========================================================================
+    if not is_baseline_complete(user_context, strict=False):
+        baseline_status = get_baseline_status(user_context)
+        return {
+            **no_probe,
+            "baseline_incomplete": True,
+            "baseline_status": baseline_status,
+            "message": f"Collect baseline info first. Missing: {', '.join(baseline_status['missing_fields'])}"
+        }
 
     age = user_context.get("age")
     monthly_expenses = user_context.get("monthly_expenses")
@@ -36,16 +136,6 @@ def should_probe_for_goal(field_name: str, field_value: Any, user_context: dict)
     # Check what we've recently probed to avoid consecutive similar questions
     recent_probes = user_context.get("recent_probes", [])
     last_probe_category = user_context.get("last_probe_category")
-
-    # Default response (no probing needed)
-    no_probe = {
-        "should_probe": False,
-        "probe_question": None,
-        "potential_goal": None,
-        "priority": None,
-        "track_if_denied": False,
-        "denial_note": None
-    }
 
     # 1. HIGH-INTEREST DEBT - CRITICAL
     if field_name == "debts" and isinstance(field_value, list):

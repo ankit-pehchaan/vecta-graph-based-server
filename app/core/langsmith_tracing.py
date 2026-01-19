@@ -97,8 +97,3 @@ def initialize_langsmith_tracing() -> bool:
     except Exception as e:
         logger.error(f"Failed to initialize LangSmith tracing: {e}")
         return False
-
-
-def is_tracing_enabled() -> bool:
-    """Check if LangSmith tracing is currently enabled."""
-    return _tracing_initialized

@@ -973,8 +973,27 @@ GOAL_CLASSIFICATIONS = {
     "luxury": "High-end luxury items",
     "life_event": "Marriage, child education, retirement",
     "investment": "ETFs, stocks, property investment",
-    "emergency": "Emergency planning"
+    "emergency": "Emergency planning",
+    "not_a_goal": "NOT a financial goal - vague statements, preferences, or non-financial aspirations"
 }
+
+# Examples of things that are NOT financial goals
+NOT_A_GOAL_EXAMPLES = [
+    "I want to be happy",
+    "I like traveling",
+    "I enjoy good food",
+    "I want to spend time with family",
+    "I want to learn new skills",
+    "I want to stay healthy",
+    "I want work-life balance",
+    "I'm thinking about my future",
+    "I want to be successful",
+    "I want financial freedom",  # Too vague
+    "I want to be rich",  # Too vague
+    "I want a better life",  # Too vague
+    "I'm worried about money",  # A concern, not a goal
+    "I need to save more",  # Too vague without a target
+]
 
 
 def sync_classify_goal(user_goal: str, db_url: str, session_id: str) -> dict:
@@ -1004,20 +1023,38 @@ def sync_classify_goal(user_goal: str, db_url: str, session_id: str) -> dict:
 
         # Not a duplicate - proceed with classification
         classifications_text = "\n".join([f"- {k}: {v}" for k, v in GOAL_CLASSIFICATIONS.items()])
+        not_a_goal_examples = "\n".join([f'  - "{ex}"' for ex in NOT_A_GOAL_EXAMPLES])
 
-        prompt = f"""Classify the following user goal into one of these categories:
+        prompt = f"""You are a STRICT financial goal classifier. Determine if this is a REAL, CONCRETE financial goal.
 
+A REAL financial goal must have:
+1. A SPECIFIC target or outcome (not vague aspirations)
+2. Something that requires MONEY or financial planning
+3. A tangible item, event, or financial milestone
+
+IMPORTANT: Be STRICT. If vague, abstract, or not clearly financial - use "not_a_goal".
+
+Examples of NOT a goal:
+{not_a_goal_examples}
+
+Examples of REAL goals:
+  - "I want to buy a car" → medium_purchase
+  - "Save for my wedding" → life_event
+  - "Build emergency fund of $20k" → emergency
+  - "Buy a house in 5 years" → large_purchase
+
+Categories (only use if REAL financial goal):
 {classifications_text}
 
-User's goal: "{user_goal}"
+User's input: "{user_goal}"
 
 Respond with JSON:
-{{"classification": "category_name", "reasoning": "brief explanation"}}"""
+{{"classification": "category_name", "reasoning": "brief explanation", "is_valid_goal": true/false}}"""
 
         response = client.chat.completions.create(
             model="gpt-4.1",
             messages=[
-                {"role": "system", "content": "You are a financial goal classifier. Always respond with valid JSON only."},
+                {"role": "system", "content": "You are a STRICT financial goal classifier. Be conservative - reject vague or non-financial inputs. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
@@ -1031,9 +1068,23 @@ Respond with JSON:
             result = json.loads(raw_content)
         except json.JSONDecodeError:
             logger.warning(f"[TOOL:classify_goal] Could not parse response: {raw_content[:100]}")
-            result = {"classification": "life_event", "reasoning": "Default classification"}
+            result = {"classification": "not_a_goal", "reasoning": "Could not parse classification", "is_valid_goal": False}
 
-        # Update user store
+        # Check if it's a valid goal
+        is_valid = result.get("is_valid_goal", True) and result["classification"] != "not_a_goal"
+
+        if not is_valid:
+            # Not a valid financial goal - don't save it
+            logger.info(f"[TOOL:classify_goal] Rejected as not_a_goal: {user_goal[:50]}")
+            return {
+                "classification": "not_a_goal",
+                "reasoning": result.get("reasoning", "This is not a concrete financial goal"),
+                "is_valid_goal": False,
+                "is_duplicate": False,
+                "message": "This doesn't appear to be a concrete financial goal. A financial goal should be specific and require financial planning (e.g., 'buy a car', 'save for wedding', 'build emergency fund')."
+            }
+
+        # Valid goal - update user store
         _update_user_store(session, session_id, {
             "user_goal": user_goal,
             "goal_classification": result["classification"],
@@ -1051,6 +1102,7 @@ Respond with JSON:
         return {
             "classification": result["classification"],
             "reasoning": result["reasoning"],
+            "is_valid_goal": True,
             "is_duplicate": False,
             "message": f"Goal classified as: {result['classification']}"
         }
