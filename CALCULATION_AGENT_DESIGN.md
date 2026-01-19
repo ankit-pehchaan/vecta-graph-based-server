@@ -255,7 +255,7 @@ class CalculationAgent:
             instructions=self._load_prompt(),
             output_schema=CalculationResponse,
             markdown=False,
-            debug_mode=True,
+            debug_mode=False,
         )
         return self._agent
     
