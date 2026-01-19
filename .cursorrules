@@ -6,6 +6,10 @@ Core Rules
 - PostgreSQL in production, SQLite for dev only
 - Start with single agent, scale up only when needed
 
+Documentation:
+- Don't use f-strings for print lines where there are no variables to format.
+- Don't use emojis in examples and print lines
+
 Basic Agent (start here):
 ```python
 from agno.agent import Agent
@@ -176,7 +180,7 @@ Common Mistakes
 
 Production
 - Use PostgresDb not SqliteDb
-- Set show_tool_calls=False, debug_mode=False
+- Set debug_mode=False
 - Wrap agent.run() in try-except
 
 Docs: https://docs.agno.com
