@@ -238,7 +238,7 @@ class VizSeries(BaseModel):
 class VizChart(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    kind: Literal["line", "bar", "area"]
+    kind: Literal["line", "bar", "area", "pie"]
     x_label: str
     y_label: str
     x_unit: Optional[str] = None

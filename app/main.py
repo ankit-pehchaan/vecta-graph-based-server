@@ -5,7 +5,7 @@ from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from app.api.v1.endpoints import auth, advice, health
+from app.api.v1.endpoints import auth, advice, health, visualizations
 from app.schemas.response import ApiResponse
 from app.core.dependencies import limiter
 from app.core.handler import (
@@ -77,6 +77,7 @@ app.add_exception_handler(Exception, general_exception_handler)
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(advice.router, prefix="/api/v1/advice", tags=["Advice"])
+app.include_router(visualizations.router, prefix="/api/v1/visualizations", tags=["Visualizations"])
 app.include_router(health.router, prefix="/api/v1", tags=["Health"])
 
 

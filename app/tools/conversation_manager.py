@@ -268,21 +268,18 @@ def link_savings_emergency_fund(
     - We won't ask separately about emergency fund
     - Analysis will use savings as the emergency fund value
     """
-    user = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
-    if not user:
-        return
-
-    user.savings_emergency_linked = linked
-    session.commit()
-    logger.info(f"[CONV_MANAGER] Set savings_emergency_linked={linked} for {email}")
+    # NOTE: savings_emergency_linked field has been removed from User model
+    # This function is now a no-op - savings and emergency_fund are separate Assets
+    logger.info(f"[CONV_MANAGER] link_savings_emergency_fund called but field removed (no-op)")
 
 
 def is_savings_emergency_linked(session: Session, email: str) -> bool:
-    """Check if user's savings and emergency fund are linked."""
-    user = session.execute(select(User).where(User.email == email)).scalar_one_or_none()
-    if not user:
-        return False
-    return user.savings_emergency_linked or False
+    """Check if user's savings and emergency fund are linked.
+
+    NOTE: savings_emergency_linked field has been removed from User model.
+    This function now always returns False - savings and emergency_fund are separate Assets.
+    """
+    return False
 
 
 def detect_savings_emergency_link(user_message: str) -> bool:
@@ -340,14 +337,15 @@ def get_profile_summary_for_confirmation(session: Session, email: str) -> str:
     if user.expenses:
         parts.append(f"Monthly expenses: ${user.expenses:,.0f}")
 
-    if user.savings:
-        if user.savings_emergency_linked:
-            parts.append(f"Savings (also emergency fund): ${user.savings:,.0f}")
-        else:
-            parts.append(f"Savings: ${user.savings:,.0f}")
+    # Compute savings and emergency_fund from Assets table
+    savings_total = sum(a.value or 0 for a in (user.assets or []) if a.asset_type == "savings")
+    emergency_fund_total = sum(a.value or 0 for a in (user.assets or []) if a.asset_type == "emergency_fund")
 
-    if user.emergency_fund and not user.savings_emergency_linked:
-        parts.append(f"Emergency fund: ${user.emergency_fund:,.0f}")
+    if savings_total > 0:
+        parts.append(f"Savings: ${savings_total:,.0f}")
+
+    if emergency_fund_total > 0:
+        parts.append(f"Emergency fund: ${emergency_fund_total:,.0f}")
 
     if user.relationship_status:
         parts.append(f"Relationship: {user.relationship_status}")

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
+
+import numpy as np
 
 
 FREQUENCY_PER_YEAR: dict[str, int] = {
@@ -18,6 +20,34 @@ class LoanScheduleSummary:
     total_principal: float
     periods: int
     payoff_periods: int
+
+
+@dataclass(frozen=True)
+class MonteCarloResult:
+    """Result of Monte Carlo simulation."""
+    percentile_10: list[float]   # Conservative scenario
+    percentile_25: list[float]   # Below median
+    percentile_50: list[float]   # Median (expected)
+    percentile_75: list[float]   # Above median
+    percentile_90: list[float]   # Optimistic scenario
+    years: list[int]             # Time points (0, 1, 2, ... N)
+    final_median: float
+    final_mean: float
+    probability_of_success: float  # % of simulations meeting target
+    initial_value: float
+    monthly_contribution: float
+    expected_return: float
+    volatility: float
+    num_simulations: int
+
+
+# Risk profile presets for Monte Carlo simulations
+MONTE_CARLO_PRESETS: dict[str, dict[str, float]] = {
+    "conservative": {"expected_return": 5.0, "volatility": 8.0},
+    "balanced": {"expected_return": 7.0, "volatility": 12.0},
+    "growth": {"expected_return": 9.0, "volatility": 18.0},
+    "aggressive": {"expected_return": 11.0, "volatility": 25.0},
+}
 
 
 def pmt(principal: float, rate_per_period: float, num_periods: int) -> float:
@@ -169,4 +199,163 @@ def amortize_balance_trajectory(
     return balances, summary
 
 
+def monte_carlo_projection(
+    initial_value: float,
+    monthly_contribution: float,
+    years: int,
+    expected_return_percent: float,
+    volatility_percent: float,
+    num_simulations: int = 1000,
+    target_value: Optional[float] = None,
+    seed: Optional[int] = None,
+) -> MonteCarloResult:
+    """
+    Run Monte Carlo simulation for investment/retirement projections.
+
+    Uses geometric Brownian motion model:
+    - Monthly returns drawn from log-normal distribution
+    - Contributions added monthly
+
+    Args:
+        initial_value: Starting portfolio value
+        monthly_contribution: Regular monthly investment
+        years: Projection horizon
+        expected_return_percent: Annual expected return as percent (e.g., 7.0)
+        volatility_percent: Annual volatility as percent (e.g., 15.0)
+        num_simulations: Number of simulation paths (default 1000)
+        target_value: Optional target for success probability calculation
+        seed: Optional random seed for reproducibility
+
+    Returns:
+        MonteCarloResult with percentile trajectories
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    # Convert annual parameters to monthly
+    monthly_return = (expected_return_percent / 100) / 12
+    monthly_volatility = (volatility_percent / 100) / np.sqrt(12)
+
+    months = years * 12
+
+    # Initialize simulation array: (num_simulations, months + 1)
+    simulations = np.zeros((num_simulations, months + 1))
+    simulations[:, 0] = initial_value
+
+    # Generate random returns using geometric Brownian motion
+    for month in range(1, months + 1):
+        # Random monthly returns (log-normal via normal of log-returns)
+        random_returns = np.random.normal(
+            monthly_return - 0.5 * monthly_volatility**2,  # Drift adjustment
+            monthly_volatility,
+            num_simulations
+        )
+
+        # Apply returns and add contribution
+        simulations[:, month] = (
+            simulations[:, month - 1] * np.exp(random_returns)
+            + monthly_contribution
+        )
+
+    # Downsample to yearly for visualization
+    yearly_indices = [i * 12 for i in range(years + 1)]
+    yearly_simulations = simulations[:, yearly_indices]
+
+    # Calculate percentiles at each year
+    percentiles = np.percentile(yearly_simulations, [10, 25, 50, 75, 90], axis=0)
+
+    # Calculate success probability if target provided
+    success_prob = 0.0
+    if target_value is not None and target_value > 0:
+        success_count = np.sum(simulations[:, -1] >= target_value)
+        success_prob = (success_count / num_simulations) * 100
+
+    return MonteCarloResult(
+        percentile_10=percentiles[0].tolist(),
+        percentile_25=percentiles[1].tolist(),
+        percentile_50=percentiles[2].tolist(),
+        percentile_75=percentiles[3].tolist(),
+        percentile_90=percentiles[4].tolist(),
+        years=list(range(years + 1)),
+        final_median=float(percentiles[2, -1]),
+        final_mean=float(np.mean(simulations[:, -1])),
+        probability_of_success=success_prob,
+        initial_value=initial_value,
+        monthly_contribution=monthly_contribution,
+        expected_return=expected_return_percent,
+        volatility=volatility_percent,
+        num_simulations=num_simulations,
+    )
+
+
+def retirement_projection(
+    current_age: int,
+    retirement_age: int,
+    current_super: float,
+    annual_salary: float,
+    employer_contribution_rate: float = 11.5,
+    personal_contribution_rate: float = 0.0,
+    risk_profile: Literal["conservative", "balanced", "growth", "aggressive"] = "balanced",
+    target_retirement_balance: Optional[float] = None,
+) -> MonteCarloResult:
+    """
+    Specialized Monte Carlo for Australian superannuation projection.
+
+    Args:
+        current_age: User's current age
+        retirement_age: Target retirement age
+        current_super: Current superannuation balance
+        annual_salary: Annual salary for contribution calculation
+        employer_contribution_rate: Super guarantee rate (percent, default 11.5%)
+        personal_contribution_rate: Additional personal contribution (percent)
+        risk_profile: Investment risk profile
+        target_retirement_balance: Optional target for success probability
+
+    Returns:
+        MonteCarloResult with retirement projections
+    """
+    years = retirement_age - current_age
+    if years <= 0:
+        raise ValueError("Retirement age must be greater than current age")
+
+    # Calculate monthly contributions
+    total_contribution_rate = employer_contribution_rate + personal_contribution_rate
+    annual_contribution = annual_salary * (total_contribution_rate / 100)
+    monthly_contribution = annual_contribution / 12
+
+    # Get preset parameters
+    preset = MONTE_CARLO_PRESETS.get(risk_profile, MONTE_CARLO_PRESETS["balanced"])
+
+    return monte_carlo_projection(
+        initial_value=current_super,
+        monthly_contribution=monthly_contribution,
+        years=years,
+        expected_return_percent=preset["expected_return"],
+        volatility_percent=preset["volatility"],
+        target_value=target_retirement_balance,
+    )
+
+
+def goal_projection(
+    goal_amount: float,
+    current_savings: float,
+    monthly_savings: float,
+    timeline_years: int,
+    risk_profile: Literal["conservative", "balanced", "growth"] = "balanced",
+) -> MonteCarloResult:
+    """
+    Monte Carlo projection for general savings goals.
+
+    Returns probability of achieving goal and percentile trajectories.
+    """
+    preset = MONTE_CARLO_PRESETS.get(risk_profile, MONTE_CARLO_PRESETS["balanced"])
+
+    return monte_carlo_projection(
+        initial_value=current_savings,
+        monthly_contribution=monthly_savings,
+        years=timeline_years,
+        expected_return_percent=preset["expected_return"],
+        volatility_percent=preset["volatility"],
+        target_value=goal_amount,
+    )
 

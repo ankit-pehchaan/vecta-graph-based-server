@@ -8,6 +8,7 @@ from app.core.constants import AccountStatus
 
 if TYPE_CHECKING:
     from app.models.financial import Goal, Asset, Liability, Insurance, Superannuation
+    from app.models.visualization import VisualizationHistory
 
 
 class User(Base):
@@ -63,8 +64,6 @@ class User(Base):
     )  # Assessment of financial maturity
 
     # Additional financial fields (from store_manager)
-    savings: Mapped[float | None] = mapped_column(Float, nullable=True)
-    emergency_fund: Mapped[float | None] = mapped_column(Float, nullable=True)
     job_stability: Mapped[str | None] = mapped_column(String(100), nullable=True)
     dependents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     timeline: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -88,7 +87,6 @@ class User(Base):
     # Conversation tracking fields
     conversation_history: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Recent turns for context
     field_states: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Track field completion states
-    savings_emergency_linked: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     last_correction: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Track recent corrections
 
     created_at: Mapped[datetime] = mapped_column(
@@ -118,6 +116,9 @@ class User(Base):
     )
     superannuation: Mapped[list["Superannuation"]] = relationship(
         "Superannuation", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+    )
+    visualizations: Mapped[list["VisualizationHistory"]] = relationship(
+        "VisualizationHistory", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
     )
 
     def to_dict(self) -> dict:
@@ -157,8 +158,6 @@ class User(Base):
             "risk_tolerance": self.risk_tolerance,
             "financial_stage": self.financial_stage,
             # Additional financial fields
-            "savings": self.savings,
-            "emergency_fund": self.emergency_fund,
             "job_stability": self.job_stability,
             "dependents": self.dependents,
             "timeline": self.timeline,
@@ -178,7 +177,6 @@ class User(Base):
             # Conversation tracking
             "conversation_history": self.conversation_history,
             "field_states": self.field_states,
-            "savings_emergency_linked": self.savings_emergency_linked,
             "last_correction": self.last_correction,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -211,8 +209,6 @@ class User(Base):
             "risk_tolerance": self.risk_tolerance,
             "financial_stage": self.financial_stage,
             # Additional financial fields
-            "savings": self.savings,
-            "emergency_fund": self.emergency_fund,
             "job_stability": self.job_stability,
             "dependents": self.dependents,
             "timeline": self.timeline,
@@ -232,7 +228,6 @@ class User(Base):
             # Conversation tracking
             "conversation_history": self.conversation_history or [],
             "field_states": self.field_states or {},
-            "savings_emergency_linked": self.savings_emergency_linked or False,
             "last_correction": self.last_correction,
             # Related entities
             "goals": [g.to_dict() for g in self.goals] if self.goals else [],

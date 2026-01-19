@@ -259,17 +259,11 @@ Respond with JSON containing ONLY fields with concrete values:"""
                 else:
                     print(f"✅✅✅ [EXTRACTOR]   ⏭️  Skipped {fact_key}: already set to {current_value}")
         
-        # Handle savings -> Asset table AND User field (always sync both)
+        # Handle savings -> Asset table ONLY (no longer stored on User model)
         if "savings" in facts and is_valid_number(facts["savings"]):
             savings_value = float(facts["savings"])
-            
-            # Update User.savings field (always sync)
-            if user.savings != savings_value:
-                user.savings = savings_value
-                updates_made.append(f"savings_user: ${savings_value} (updated)")
-                print(f"✅✅✅ [EXTRACTOR]   ✓ Updated user.savings = ${savings_value}")
-            
-            # Update Asset table
+
+            # Update Asset table only
             existing_savings = next((a for a in (user.assets or []) if a.asset_type == "savings"), None)
             
             if existing_savings:
@@ -291,17 +285,11 @@ Respond with JSON containing ONLY fields with concrete values:"""
                 updates_made.append(f"savings_asset: ${savings_value} (created)")
                 print(f"✅✅✅ [EXTRACTOR]   ✓ Created savings_asset = ${savings_value}")
         
-        # Handle emergency_fund -> Asset table AND User field (always sync both)
+        # Handle emergency_fund -> Asset table ONLY (no longer stored on User model)
         if "emergency_fund" in facts and is_valid_number(facts["emergency_fund"]):
             ef_value = float(facts["emergency_fund"])
-            
-            # Update User.emergency_fund field (always sync)
-            if user.emergency_fund != ef_value:
-                user.emergency_fund = ef_value
-                updates_made.append(f"emergency_fund_user: ${ef_value} (updated)")
-                print(f"✅✅✅ [EXTRACTOR]   ✓ Updated user.emergency_fund = ${ef_value}")
-            
-            # Update Asset table
+
+            # Update Asset table only
             existing_ef = next((a for a in (user.assets or []) if a.asset_type == "emergency_fund"), None)
             
             if existing_ef:
@@ -437,14 +425,18 @@ Respond with JSON containing ONLY fields with concrete values:"""
             return
         
         # Map field names to user attributes
+        # Compute savings/emergency_fund from Assets table
+        savings_total = sum(a.value or 0 for a in (user.assets or []) if a.asset_type == "savings")
+        emergency_fund_total = sum(a.value or 0 for a in (user.assets or []) if a.asset_type == "emergency_fund")
+
         field_mapping = {
             "age": user.age,
             "monthly_income": user.monthly_income,
             "monthly_expenses": user.expenses,
-            "emergency_fund": user.emergency_fund,
+            "emergency_fund": emergency_fund_total if emergency_fund_total > 0 else None,
             "debts": user.liabilities,
             "superannuation": user.superannuation,
-            "savings": user.savings,
+            "savings": savings_total if savings_total > 0 else None,
             "timeline": user.timeline,
             "job_stability": user.job_stability,
             "marital_status": user.relationship_status,

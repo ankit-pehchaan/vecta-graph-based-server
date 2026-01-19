@@ -399,8 +399,8 @@ def _get_user_store(session: Session, email: str) -> dict:
         "age": user.age,
         "monthly_income": user.monthly_income,
         "monthly_expenses": user.expenses,
-        "savings": user.savings,
-        "emergency_fund": user.emergency_fund,
+        "savings": savings_total if savings_total > 0 else None,  # Computed from Assets
+        "emergency_fund": emergency_fund_total if emergency_fund_total > 0 else None,  # Computed from Assets
         "debts": debts,
         "investments": investments,
         "marital_status": user.relationship_status,
@@ -425,7 +425,6 @@ def _get_user_store(session: Session, email: str) -> dict:
         # Conversation tracking
         "conversation_history": user.conversation_history or [],
         "field_states": user.field_states or {},
-        "savings_emergency_linked": user.savings_emergency_linked or False,
         "last_correction": user.last_correction,
     }
 
@@ -486,7 +485,6 @@ def _get_empty_store() -> dict:
         # Conversation tracking
         "conversation_history": [],  # Recent conversation turns
         "field_states": {},  # Track field completion states
-        "savings_emergency_linked": False,  # Whether savings IS the emergency fund
         "last_correction": None,  # Last correction made by user
     }
 
@@ -522,8 +520,7 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         "age": "age",
         "monthly_income": "monthly_income",
         "monthly_expenses": "expenses",
-        "savings": "savings",
-        "emergency_fund": "emergency_fund",  # Also saved to Asset table below
+        # NOTE: savings and emergency_fund are ONLY stored in Asset table (not User scalar fields)
         "marital_status": "relationship_status",
         "dependents": "dependents",
         "job_stability": "job_stability",
@@ -533,12 +530,11 @@ def _update_user_store(session: Session, email: str, updates: dict) -> None:
         # Conversation tracking fields
         "conversation_history": "conversation_history",
         "field_states": "field_states",
-        "savings_emergency_linked": "savings_emergency_linked",
         "last_correction": "last_correction",
     }
 
     # Numeric fields that cannot store "not_provided" string (they are Float/Integer columns)
-    numeric_fields = {"age", "monthly_income", "monthly_expenses", "savings", "emergency_fund", "target_amount", "dependents"}
+    numeric_fields = {"age", "monthly_income", "monthly_expenses", "target_amount", "dependents"}
 
     for source_key, target_key in field_mapping.items():
         if source_key in updates:

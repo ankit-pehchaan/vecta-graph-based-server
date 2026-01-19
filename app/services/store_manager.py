@@ -158,7 +158,7 @@ class StoreManager:
             "age": user.age,
             "monthly_income": user.monthly_income,
             "monthly_expenses": user.expenses,
-            "savings": user.savings if user.savings else (savings_total if savings_total > 0 else None),
+            "savings": savings_total if savings_total > 0 else None,  # Computed from Assets table
             "emergency_fund": emergency_fund_total if emergency_fund_total > 0 else None,
             "debts": debts,
             "investments": investments,

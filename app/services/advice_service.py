@@ -13,6 +13,9 @@ from app.services.intelligence_service import IntelligenceService
 from app.services.document_agent_service import DocumentAgentService
 from app.services.visualization_service import VisualizationService
 from app.services.summary_extractor import SummaryExtractor
+from app.services.viz_state_manager import VizStateManager
+from app.services.viz_helpfulness_scorer import HelpfulnessScorer, ScoringDecision
+from app.services.viz_follow_up_handler import VizFollowUpHandler
 from app.repositories.financial_profile_repository import FinancialProfileRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.advice import (
@@ -105,6 +108,11 @@ class AdviceService:
         # Track message count per user for triggering summary extraction every 3rd message
         self._message_counters: dict[str, int] = {}
 
+        # Visualization state management (per-session)
+        self._viz_state_managers: dict[str, VizStateManager] = {}
+        self._helpfulness_scorer = HelpfulnessScorer()
+        self._follow_up_handler = VizFollowUpHandler()
+
     @property
     def _use_tool_based_agent(self) -> bool:
         """Check if tool-based agent is enabled via feature flag."""
@@ -161,6 +169,13 @@ class AdviceService:
         if hasattr(settings, "enabled_features"):
             return "visualization" in settings.enabled_features
         return True
+
+    def _get_viz_state_manager(self, username: str) -> VizStateManager:
+        """Get or create VizStateManager for a user session."""
+        if username not in self._viz_state_managers:
+            session_id = f"viz-session-{username}-{uuid.uuid4().hex[:8]}"
+            self._viz_state_managers[username] = VizStateManager(session_id)
+        return self._viz_state_managers[username]
 
     def _is_profile_ready_for_post_discovery(self, profile_data: Optional[dict]) -> bool:
         """
@@ -1210,22 +1225,19 @@ Original response that needs fixing:
         """
         Generate and send visualizations if relevant to the conversation.
 
-        Runs in background after response is sent. Only triggers when:
-        - User asks about charts, graphs, visualizations
-        - User asks about spending over time, comparisons, projections
-        - Response involves numeric analysis that benefits from visuals
+        Uses hybrid helpfulness scoring (rules + LLM + history) to decide
+        whether to show visualizations. Supports follow-up questions that
+        update existing visualizations.
+
+        Runs in background after response is sent.
         """
         try:
             if not self._is_websocket_connected(websocket):
                 logger.debug(f"[VIZ] WebSocket not connected for {username}, skipping visualization")
                 return
 
-            # Check if visualization is relevant for this message
-            if not self._should_generate_visualization(user_message, response):
-                logger.debug(f"[VIZ] Visualization not relevant for this message")
-                return
-
-            logger.info(f"[VIZ] Generating visualization for {username}")
+            # Get state manager for this user
+            state_manager = self._get_viz_state_manager(username)
 
             # Get full profile from repository for complete data
             full_profile = profile
@@ -1238,26 +1250,116 @@ Original response that needs fixing:
                     logger.error(f"[VIZ] Error fetching profile: {e}")
                     full_profile = {}
 
-            # Use visualization service to generate relevant visualizations
+            # Step 1: Check for follow-up question
+            follow_up_result = self._follow_up_handler.detect_follow_up(
+                user_message, state_manager
+            )
+
+            parent_viz_id = None
+            if follow_up_result.is_follow_up and follow_up_result.confidence >= 0.6:
+                logger.info(f"[VIZ] Follow-up detected (conf={follow_up_result.confidence:.2f}): {follow_up_result.modifications}")
+                parent_viz_id = follow_up_result.parent_viz_id
+
+                # Merge modifications with parent parameters
+                if follow_up_result.parent_calc_kind:
+                    parent_params = state_manager.get_last_viz_parameters(follow_up_result.parent_calc_kind)
+                    if parent_params and follow_up_result.modifications:
+                        merged_params = self._follow_up_handler.merge_parameters(
+                            parent_params, follow_up_result.modifications
+                        )
+                        logger.info(f"[VIZ] Merged follow-up params: {merged_params}")
+
+            # Step 2: Quick check before expensive operations
+            if not self._helpfulness_scorer.quick_check(user_message, response, state_manager):
+                logger.debug(f"[VIZ] Quick check failed - skipping visualization")
+                return
+
+            # Step 3: Calculate helpfulness score
+            helpfulness_result = await self._helpfulness_scorer.score(
+                user_text=user_message,
+                agent_text=response,
+                profile_data=full_profile,
+                state_manager=state_manager,
+                llm_score=None,  # Will be computed by rule engine confidence
+            )
+
+            logger.info(f"[VIZ] Helpfulness score: {helpfulness_result.total_score:.2f} "
+                       f"(rule={helpfulness_result.rule_score:.2f}, llm={helpfulness_result.llm_score:.2f}, "
+                       f"history={helpfulness_result.history_score:.2f}) -> {helpfulness_result.decision.value}")
+
+            # Step 4: Make decision based on score
+            if helpfulness_result.decision == ScoringDecision.SKIP:
+                logger.debug(f"[VIZ] Skipping visualization: {helpfulness_result.reason}")
+                return
+
+            # For DEFER, we still proceed but may use lower max_cards
+            max_cards = 2 if helpfulness_result.decision == ScoringDecision.SHOW else 1
+
+            # Step 5: Generate visualizations
+            logger.info(f"[VIZ] Generating visualization for {username}")
+
             viz_messages = await self.visualization_service.maybe_build_many(
                 username=username,
                 user_text=user_message,
                 agent_text=response,
                 profile_data=full_profile,
-                max_cards=2  # Limit to avoid spam
+                max_cards=max_cards
             )
 
-            # Send each visualization through WebSocket
-            for viz_msg in viz_messages:
-                if not self._is_websocket_connected(websocket):
-                    logger.debug(f"[VIZ] WebSocket disconnected, stopping visualization send")
-                    return
+            if not viz_messages:
+                logger.debug(f"[VIZ] No visualizations generated")
+                return
 
-                logger.info(f"[VIZ] Sending visualization: {viz_msg.title}")
-                await self.send_message(websocket, viz_msg.model_dump(mode='json'))
+            # Step 6: Store and send each visualization
+            async for session in self.db_manager.get_session():
+                for viz_msg in viz_messages:
+                    if not self._is_websocket_connected(websocket):
+                        logger.debug(f"[VIZ] WebSocket disconnected, stopping visualization send")
+                        return
 
-            if viz_messages:
-                logger.info(f"[VIZ] Sent {len(viz_messages)} visualization(s) for {username}")
+                    # Store to database with scores
+                    scores = {
+                        "helpfulness_score": helpfulness_result.total_score,
+                        "rule_score": helpfulness_result.rule_score,
+                        "llm_score": helpfulness_result.llm_score,
+                        "history_score": helpfulness_result.history_score,
+                    }
+
+                    # Determine calc_kind from viz_msg
+                    calc_kind = None
+                    if hasattr(viz_msg, 'chart') and viz_msg.chart:
+                        # Try to infer calc_kind from title or data
+                        title_lower = viz_msg.title.lower() if viz_msg.title else ""
+                        if "loan" in title_lower or "mortgage" in title_lower or "amort" in title_lower:
+                            calc_kind = "loan_amortization"
+                        elif "retirement" in title_lower or "monte carlo" in title_lower:
+                            calc_kind = "monte_carlo"
+                        elif "allocation" in title_lower or "asset" in title_lower:
+                            calc_kind = "asset_allocation_pie"
+                        elif "snapshot" in title_lower or "cashflow" in title_lower:
+                            calc_kind = "profile_snapshot"
+
+                    try:
+                        viz_id = await state_manager.add_visualization(
+                            db=session,
+                            user_id=full_profile.get("id", 0),
+                            viz_msg=viz_msg.model_dump(mode='json'),
+                            calc_kind=calc_kind,
+                            parameters=None,  # Could extract from viz_msg if needed
+                            scores=scores,
+                            parent_viz_id=parent_viz_id,
+                        )
+                        logger.info(f"[VIZ] Stored visualization {viz_id[:8]}... (calc_kind={calc_kind})")
+                    except Exception as e:
+                        logger.warning(f"[VIZ] Failed to store visualization: {e}")
+
+                    # Send to client
+                    logger.info(f"[VIZ] Sending visualization: {viz_msg.title}")
+                    await self.send_message(websocket, viz_msg.model_dump(mode='json'))
+
+                break  # Exit async for session loop
+
+            logger.info(f"[VIZ] Sent {len(viz_messages)} visualization(s) for {username}")
 
         except Exception as e:
             logger.error(f"[VIZ] Error generating visualization: {e}")
@@ -1415,13 +1517,28 @@ Original response that needs fixing:
                     logger.info(f"[VIZ_FLOW] Sending visualization: {viz_msg.title}")
                     yield viz_msg.model_dump(mode='json')
             else:
-                # No visualization could be generated - send a helpful message
-                no_viz_response = AgentResponse(
-                    content="I couldn't generate that visualization with the current data. Could you tell me more about the specifics? For example, the exact amounts, timeframes, or what you'd like to compare.",
+                # Data is missing - acknowledge and let main flow handle data collection
+                # Check what's missing for logging purposes
+                missing_info = self.visualization_service.get_missing_data_for_viz(
+                    user_text=user_message,
+                    profile_data=profile,
+                )
+                if missing_info:
+                    logger.info(f"[VIZ_FLOW] Missing data for {missing_info.viz_type}: {missing_info.missing_fields}")
+
+                # Don't ask for data here - redirect to normal conversation flow
+                # The agent will naturally probe for missing data
+                redirect_response = AgentResponse(
+                    content="I'd love to show you that! Let me first make sure I have the details I need to create something useful for you.",
                     is_complete=True,
                     timestamp=datetime.now(timezone.utc).isoformat()
                 )
-                yield no_viz_response.model_dump()
+                yield redirect_response.model_dump()
+
+                # Now let the main pipeline handle it - it will probe for missing data
+                async for msg in self._process_with_tool_agent(websocket, username, user_message):
+                    yield msg
+                return  # Exit after main pipeline handles it
 
             # Update conversation context
             self._conversation_contexts[username] += f"Jamie: {acknowledgment}\n"

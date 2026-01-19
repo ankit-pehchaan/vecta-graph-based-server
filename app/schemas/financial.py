@@ -141,10 +141,22 @@ class FinancialProfile(BaseModel):
     @computed_field
     @property
     def cash_balance(self) -> float:
-        """Get total cash/savings from assets."""
+        """Get total liquid cash (cash + savings + emergency_fund) from assets."""
         return sum(
-            a.value or 0 
-            for a in self.assets 
-            if a.asset_type in ('cash', 'savings')
+            a.value or 0
+            for a in self.assets
+            if a.asset_type in ('cash', 'savings', 'emergency_fund')
         )
+
+    @computed_field
+    @property
+    def total_savings(self) -> float:
+        """Get savings from assets (asset_type='savings')."""
+        return sum(a.value or 0 for a in self.assets if a.asset_type == 'savings')
+
+    @computed_field
+    @property
+    def total_emergency_fund(self) -> float:
+        """Get emergency fund from assets (asset_type='emergency_fund')."""
+        return sum(a.value or 0 for a in self.assets if a.asset_type == 'emergency_fund')
 
