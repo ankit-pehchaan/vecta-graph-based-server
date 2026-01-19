@@ -1,0 +1,13 @@
+# Core Framework
+agno
+pydantic            
+# API Server
+fastapi
+uvicorn[standard]
+websockets
+# HTTP Client (used by agno/openai)
+httpx
+# Environment Variables
+python-dotenv
+# OpenAI (used by agno.models.openai)
+openai
