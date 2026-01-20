@@ -2382,24 +2382,19 @@ def sync_generate_visualization(
 
     For loan_amortization: If params are incomplete, tries to fill from user's stored liabilities.
 
-    NOTE: Visualizations are blocked during assessment phase to focus on data collection.
-    Only show visualizations in planning phase after ~90% of data is collected.
+    NOTE: Phase-based visualization blocking is handled by viz_helpfulness_scorer,
+    which allows explicit user requests but blocks proactive agent visualizations
+    during the assessment phase.
     """
     session = _get_sync_session(db_url)
 
     try:
         profile_data = _get_user_store(session, session_id)
 
-        # PHASE GATE: Block visualizations during assessment phase
-        # Focus on data collection, not proactive visualizations
-        conversation_phase = profile_data.get("conversation_phase", "initial")
-        if conversation_phase in ("initial", "assessment"):
-            return {
-                "success": False,
-                "message": "Visualizations are not available during the data collection phase. "
-                           "Continue gathering the user's financial information first. "
-                           "Visualizations will be enabled once we have enough data for meaningful analysis."
-            }
+        # NOTE: Phase gating moved to viz_helpfulness_scorer.py
+        # The scorer blocks PROACTIVE visualizations during assessment
+        # but allows explicit user requests like "show me a chart"
+        # This tool executes whatever the agent decides to show
 
         if viz_type == "profile_snapshot":
             result = _build_profile_snapshot_viz(profile_data)
