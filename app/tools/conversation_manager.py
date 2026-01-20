@@ -161,6 +161,58 @@ def update_field_state(
     logger.debug(f"[CONV_MANAGER] Updated field state {field_name}={state} for {email}")
 
 
+def batch_update_field_states(
+    session: Session,
+    email: str,
+    facts: dict,
+    not_provided_value: str = "not_provided"
+) -> None:
+    """
+    Update multiple field states in a single atomic transaction.
+
+    This is more efficient and reliable than calling update_field_state() in a loop,
+    as it makes only ONE database commit for all fields.
+
+    Args:
+        session: Database session
+        email: User's email
+        facts: Dict of field_name -> value (use not_provided_value for not provided fields)
+        not_provided_value: String that indicates "not provided" (default: "not_provided")
+    """
+    if not facts:
+        return
+
+    user = session.execute(
+        select(User).where(User.email == email).with_for_update()
+    ).scalar_one_or_none()
+
+    if not user:
+        logger.warning(f"[CONV_MANAGER] User not found for batch update: {email}")
+        return
+
+    field_states = user.field_states or {}
+    timestamp = datetime.now(timezone.utc).isoformat()
+    updated_fields = []
+
+    for field_name, field_value in facts.items():
+        if field_value == not_provided_value:
+            field_states[field_name] = {
+                "state": FieldState.NOT_PROVIDED,
+                "updated_at": timestamp,
+            }
+        else:
+            field_states[field_name] = {
+                "state": FieldState.ANSWERED,
+                "value": field_value,
+                "updated_at": timestamp,
+            }
+        updated_fields.append(field_name)
+
+    user.field_states = field_states
+    session.commit()  # Single commit for all fields
+    logger.info(f"[CONV_MANAGER] Batch updated {len(updated_fields)} field states for {email}: {updated_fields}")
+
+
 def get_field_state(session: Session, email: str, field_name: str) -> Optional[dict]:
     """Get the current state of a field."""
     user = session.execute(select(User).where(User.email == email)).scalar_one_or_none()

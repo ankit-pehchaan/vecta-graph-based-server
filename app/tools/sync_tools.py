@@ -10,6 +10,7 @@ from typing import Optional
 from uuid import uuid4
 from openai import OpenAI
 from sqlalchemy import create_engine, select, update
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker, selectinload
 from app.models.user import User
 from app.models.financial import Asset, Liability, Insurance, Superannuation, Goal
@@ -20,6 +21,7 @@ from app.tools.conversation_manager import (
     get_conversation_history,
     format_history_for_prompt,
     update_field_state,
+    batch_update_field_states,
     get_field_state,
     is_field_resolved,
     record_correction,
@@ -49,6 +51,10 @@ _last_agent_questions: dict[str, str] = {}
 # Tracking for extraction calls - used to detect when agent doesn't call the tool
 # Key: session_id, Value: bool (True if extraction was called this turn)
 _extraction_called: dict[str, bool] = {}
+
+# Singleton engine for database connections - reuse across tool calls
+# Key: db_url, Value: Engine instance
+_sync_engines: dict[str, Engine] = {}
 
 
 def mark_extraction_called(session_id: str) -> None:
@@ -264,9 +270,27 @@ def check_debt_completeness(debt: dict) -> dict:
     }
 
 
+def _get_sync_engine(db_url: str) -> Engine:
+    """Get or create a singleton engine for the given database URL.
+
+    Reuses engines across tool calls to enable proper connection pooling.
+    """
+    global _sync_engines
+    if db_url not in _sync_engines:
+        _sync_engines[db_url] = create_engine(
+            db_url,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+            pool_recycle=3600,  # Recycle connections after 1 hour
+        )
+        logger.info(f"[SYNC_TOOLS] Created new database engine")
+    return _sync_engines[db_url]
+
+
 def _get_sync_session(db_url: str) -> Session:
-    """Create a synchronous database session."""
-    engine = create_engine(db_url, pool_pre_ping=True)
+    """Create a synchronous database session using singleton engine."""
+    engine = _get_sync_engine(db_url)
     SessionLocal = sessionmaker(bind=engine)
     return SessionLocal()
 
@@ -1777,18 +1801,34 @@ If nothing to extract, return: {{}}"""
         raw_content = response.choices[0].message.content
         logger.debug(f"[TOOL:extract_facts] Raw LLM response: {raw_content[:200]}")
 
-        # Parse JSON with fallback
+        # Parse JSON with fallback and proper error handling
         try:
             extracted_facts = json.loads(raw_content)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             # Try to extract JSON from markdown code blocks
             import re
             json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_content)
             if json_match:
-                extracted_facts = json.loads(json_match.group(1))
+                try:
+                    extracted_facts = json.loads(json_match.group(1))
+                except json.JSONDecodeError as e2:
+                    logger.error(f"[TOOL:extract_facts] JSON parse failed even from markdown: {e2}")
+                    logger.error(f"[TOOL:extract_facts] Raw response: {raw_content[:500]}")
+                    return {
+                        "success": False,
+                        "error": "extraction_parse_failed",
+                        "extracted_facts": {},
+                        "message": "I had trouble processing that. Could you repeat the information?"
+                    }
             else:
-                logger.warning(f"[TOOL:extract_facts] Could not parse response as JSON: {raw_content[:100]}")
-                extracted_facts = {}
+                logger.error(f"[TOOL:extract_facts] JSON parse failed for multi-intent extraction: {e}")
+                logger.error(f"[TOOL:extract_facts] Raw response: {raw_content[:500]}")
+                return {
+                    "success": False,
+                    "error": "extraction_parse_failed",
+                    "extracted_facts": {},
+                    "message": "I had trouble processing that. Could you repeat the information?"
+                }
 
         logger.info(f"[TOOL:extract_facts] Extracted: {json.dumps(extracted_facts, default=str)[:500]}")
 
@@ -1857,12 +1897,10 @@ If nothing to extract, return: {{}}"""
             _update_user_store(session, session_id, extracted_facts)
             updated_store = _get_user_store(session, session_id)
 
-            # Update field states for extracted fields
-            for field_name, field_value in extracted_facts.items():
-                if field_value == "not_provided":
-                    update_field_state(session, session_id, field_name, FieldState.NOT_PROVIDED)
-                else:
-                    update_field_state(session, session_id, field_name, FieldState.ANSWERED, field_value)
+            # Update field states for all extracted fields in ONE atomic commit
+            # This replaces the per-field loop that was making N separate commits
+            batch_update_field_states(session, session_id, extracted_facts)
+            logger.info(f"[TOOL:extract_facts] Batch updated {len(extracted_facts)} field states")
 
             # Check for probing triggers
             for field_name, field_value in extracted_facts.items():
