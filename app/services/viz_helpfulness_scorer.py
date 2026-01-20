@@ -175,24 +175,30 @@ class HelpfulnessScorer:
 
         Factors:
         - Penalty for recent visualizations (anti-spam)
-        - Penalty for early discovery phase
+        - HARD BLOCK during early discovery phase (unless explicit request)
         - Bonus for complete profile
         """
         base_score = 1.0
+        profile = profile_data or {}
+        conversation_phase = profile.get("conversation_phase", "initial")
+
+        # Check if user explicitly requested visualization
+        user_lower = user_text.lower()
+        explicit_viz_request = any(kw in user_lower for kw in [
+            "show me", "visualize", "chart", "graph", "plot",
+            "simulate", "projection", "trajectory", "diagram"
+        ])
+
+        # HARD BLOCK during assessment phase (unless explicit request)
+        # We want to focus on data collection, not show proactive visualizations
+        if conversation_phase in ("initial", "assessment") and not explicit_viz_request:
+            return 0.0  # Hard block - will make total score too low to show
 
         # Anti-spam: penalize if many recent visualizations
         if state_manager:
             recent_count = state_manager.get_recent_count(minutes=5)
             spam_penalty = min(0.15 * recent_count, 0.45)  # Max -0.45
             base_score -= spam_penalty
-
-        # Early discovery penalty
-        profile = profile_data or {}
-        conversation_phase = profile.get("conversation_phase", "initial")
-
-        if conversation_phase in ("initial", "assessment"):
-            # Penalize visualizations during early discovery
-            base_score -= 0.3
 
         # Profile completeness bonus
         completeness = self._calculate_profile_completeness(profile)
@@ -231,6 +237,7 @@ class HelpfulnessScorer:
         user_text: str,
         agent_text: str,
         state_manager: Optional[VizStateManager],
+        profile_data: Optional[dict] = None,
     ) -> bool:
         """
         Quick check if visualization might be relevant (before full scoring).
@@ -246,9 +253,18 @@ class HelpfulnessScorer:
         # Check for explicit visualization request
         viz_requests = [
             "show me", "visualize", "chart", "graph", "plot",
-            "simulate", "projection", "trajectory"
+            "simulate", "projection", "trajectory", "diagram"
         ]
-        if any(kw in user_lower for kw in viz_requests):
+        explicit_request = any(kw in user_lower for kw in viz_requests)
+
+        # HARD BLOCK during assessment phase (unless explicit request)
+        # Focus on data collection, not proactive visualizations
+        if profile_data:
+            conversation_phase = profile_data.get("conversation_phase", "initial")
+            if conversation_phase in ("initial", "assessment") and not explicit_request:
+                return False  # Block proactive visualizations during data collection
+
+        if explicit_request:
             return True
 
         # Check for numeric content in agent response

@@ -2343,11 +2343,25 @@ def sync_generate_visualization(
     Also stores the visualization for the response handler to send inline.
 
     For loan_amortization: If params are incomplete, tries to fill from user's stored liabilities.
+
+    NOTE: Visualizations are blocked during assessment phase to focus on data collection.
+    Only show visualizations in planning phase after ~90% of data is collected.
     """
     session = _get_sync_session(db_url)
 
     try:
         profile_data = _get_user_store(session, session_id)
+
+        # PHASE GATE: Block visualizations during assessment phase
+        # Focus on data collection, not proactive visualizations
+        conversation_phase = profile_data.get("conversation_phase", "initial")
+        if conversation_phase in ("initial", "assessment"):
+            return {
+                "success": False,
+                "message": "Visualizations are not available during the data collection phase. "
+                           "Continue gathering the user's financial information first. "
+                           "Visualizations will be enabled once we have enough data for meaningful analysis."
+            }
 
         if viz_type == "profile_snapshot":
             result = _build_profile_snapshot_viz(profile_data)

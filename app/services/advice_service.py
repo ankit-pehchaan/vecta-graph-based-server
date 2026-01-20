@@ -1270,7 +1270,8 @@ Original response that needs fixing:
                         logger.info(f"[VIZ] Merged follow-up params: {merged_params}")
 
             # Step 2: Quick check before expensive operations
-            if not self._helpfulness_scorer.quick_check(user_message, response, state_manager):
+            # Pass profile_data to enforce phase-based blocking during assessment
+            if not self._helpfulness_scorer.quick_check(user_message, response, state_manager, full_profile):
                 logger.debug(f"[VIZ] Quick check failed - skipping visualization")
                 return
 
