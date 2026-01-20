@@ -159,7 +159,44 @@ class Orchestrator:
     
     def _apply_goal_updates(self, response) -> None:
         """Apply goal updates from ConversationAgent response."""
-        # Add new goals to qualified
+        # Safety net: Process new_goals_detected in case goals_to_confirm is empty
+        # This handles cases where LLM populates new_goals_detected but forgets goals_to_confirm
+        for goal in (response.new_goals_detected or []):
+            goal_id = goal.goal_id
+            # Skip if already in goals_to_confirm (will be handled below)
+            if goal_id in (response.goals_to_confirm or {}):
+                continue
+            # Skip if already qualified or rejected
+            if goal_id in self.graph_memory.qualified_goals:
+                continue
+            if goal_id in self.graph_memory.rejected_goals:
+                continue
+            # If explicit goal (confidence >= 1.0), auto-qualify
+            if goal.confidence and goal.confidence >= 1.0:
+                priority = len(self.graph_memory.qualified_goals) + 1
+                self.graph_memory.qualify_goal(
+                    goal_id,
+                    {
+                        "description": goal.description,
+                        "priority": priority,
+                        "confidence": goal.confidence,
+                        "deduced_from": goal.deduced_from or [],
+                        "goal_type": goal.goal_type,
+                    }
+                )
+            # If inferred goal (confidence < 1.0), add to possible_goals
+            elif goal.confidence and goal.confidence > 0:
+                self.graph_memory.add_possible_goal(
+                    goal_id,
+                    {
+                        "description": goal.description,
+                        "confidence": goal.confidence,
+                        "deduced_from": goal.deduced_from or [],
+                        "goal_type": goal.goal_type,
+                    }
+                )
+        
+        # Add new goals to qualified (from goals_to_confirm)
         for goal_id, priority in (response.goals_to_confirm or {}).items():
             self.graph_memory.qualify_goal(goal_id, {"priority": priority})
         
