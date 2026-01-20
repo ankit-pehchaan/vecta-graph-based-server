@@ -175,24 +175,12 @@ class HelpfulnessScorer:
 
         Factors:
         - Penalty for recent visualizations (anti-spam)
-        - HARD BLOCK during early discovery phase (unless explicit request)
         - Bonus for complete profile
+
+        NOTE: Phase-based blocking removed - let LLM decide if viz is appropriate
         """
         base_score = 1.0
         profile = profile_data or {}
-        conversation_phase = profile.get("conversation_phase", "initial")
-
-        # Check if user explicitly requested visualization
-        user_lower = user_text.lower()
-        explicit_viz_request = any(kw in user_lower for kw in [
-            "show me", "visualize", "chart", "graph", "plot",
-            "simulate", "projection", "trajectory", "diagram"
-        ])
-
-        # HARD BLOCK during assessment phase (unless explicit request)
-        # We want to focus on data collection, not show proactive visualizations
-        if conversation_phase in ("initial", "assessment") and not explicit_viz_request:
-            return 0.0  # Hard block - will make total score too low to show
 
         # Anti-spam: penalize if many recent visualizations
         if state_manager:
@@ -232,6 +220,41 @@ class HelpfulnessScorer:
         field_score = filled / len(key_fields)
         return (field_score + entity_score) / 2
 
+    def _is_clearly_not_viz_relevant(self, user_text: str, agent_text: str) -> bool:
+        """
+        Check if conversation is clearly NOT relevant for visualization.
+
+        Only blocks obvious non-viz conversations (greetings, short messages, off-topic).
+        Everything else goes to LLM for decision.
+
+        Returns:
+            True if clearly not viz-relevant (should block)
+            False if might be viz-relevant (let LLM decide)
+        """
+        user_lower = user_text.lower().strip()
+        agent_lower = agent_text.lower()
+
+        # Block very short messages (likely greetings/acknowledgments)
+        if len(user_lower) < 8:
+            return True
+
+        # Block obvious greetings/thanks/off-topic
+        non_viz_exact = ["hi", "hello", "hey", "thanks", "thank you", "bye",
+                         "ok", "okay", "yes", "no", "sure", "great", "cool"]
+        if user_lower in non_viz_exact:
+            return True
+
+        # If agent reply contains financial/numeric content, likely viz-relevant
+        financial_indicators = [
+            "$", "%", "years", "months", "savings", "investment", "super",
+            "retirement", "loan", "mortgage", "income", "expenses", "balance"
+        ]
+        if any(ind in agent_lower for ind in financial_indicators):
+            return False  # Let LLM decide - agent is discussing finances
+
+        # Default: let LLM decide
+        return False
+
     def quick_check(
         self,
         user_text: str,
@@ -242,48 +265,20 @@ class HelpfulnessScorer:
         """
         Quick check if visualization might be relevant (before full scoring).
 
-        Use this for early filtering to avoid unnecessary LLM calls.
+        This is a lightweight filter that only blocks obviously non-viz conversations.
+        The LLM (VizIntentAgentService) makes the real decision.
 
         Returns:
-            True if visualization might be relevant
+            True if visualization might be relevant (delegate to LLM)
+            False if clearly not relevant (skip LLM call)
         """
-        user_lower = user_text.lower()
-        agent_lower = agent_text.lower()
+        # Only block obviously non-viz conversations
+        if self._is_clearly_not_viz_relevant(user_text, agent_text):
+            return False
 
-        # Check for explicit visualization request
-        viz_requests = [
-            "show me", "visualize", "chart", "graph", "plot",
-            "simulate", "projection", "trajectory", "diagram"
-        ]
-        explicit_request = any(kw in user_lower for kw in viz_requests)
+        # Anti-spam: block if too many recent visualizations
+        if state_manager and state_manager.get_recent_count(minutes=2) >= 3:
+            return False
 
-        # HARD BLOCK during assessment phase (unless explicit request)
-        # Focus on data collection, not proactive visualizations
-        if profile_data:
-            conversation_phase = profile_data.get("conversation_phase", "initial")
-            if conversation_phase in ("initial", "assessment") and not explicit_request:
-                return False  # Block proactive visualizations during data collection
-
-        if explicit_request:
-            return True
-
-        # Check for numeric content in agent response
-        numeric_indicators = [
-            "$", "%", "years", "months", "rate", "balance",
-            "payment", "contribution", "allocation"
-        ]
-        if any(kw in agent_lower for kw in numeric_indicators):
-            # But not if we've spammed recently
-            if state_manager and state_manager.get_recent_count(minutes=2) >= 3:
-                return False
-            return True
-
-        # Check for specific calculation topics
-        calc_topics = [
-            "loan", "mortgage", "retirement", "super", "superannuation",
-            "investment", "savings", "goal", "portfolio", "allocation"
-        ]
-        if any(kw in user_lower for kw in calc_topics):
-            return True
-
-        return False
+        # Everything else: let LLM decide
+        return True
