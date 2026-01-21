@@ -44,12 +44,12 @@ class GraphDataTool:
 
 class CalculationResponse(BaseModel):
     """Structured response from CalculationAgent."""
-    calculation_type: str = Field(description="Type of calculation performed")
-    result: dict[str, Any] = Field(default_factory=dict, description="Calculation results")
-    missing_data: list[str] = Field(default_factory=list, description="Required nodes/data not available")
-    can_calculate: bool = Field(description="Whether calculation is possible")
-    message: str = Field(description="Human-readable explanation")
-    data_used: list[str] = Field(default_factory=list, description="Which nodes were used in calculation")
+    calculation_type: str | None = Field(default=None, description="Type of calculation performed")
+    result: dict[str, Any] | None = Field(default=None, description="Calculation results")
+    missing_data: list[str] | None = Field(default=None, description="Required nodes/data not available")
+    can_calculate: bool | None = Field(default=None, description="Whether calculation is possible")
+    message: str | None = Field(default=None, description="Human-readable explanation")
+    data_used: list[str] | None = Field(default=None, description="Which nodes were used in calculation")
 
 
 class CalculationAgent:

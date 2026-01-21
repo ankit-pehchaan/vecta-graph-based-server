@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import Field, computed_field
 
-from nodes.base import BaseNode
+from nodes.base import BaseNode, CollectionSpec
 
 
 class IncomeType(str, Enum):
@@ -79,6 +79,11 @@ class Income(BaseNode):
         """Compute total annual income from all streams."""
         return sum(self.income_streams_annual.values()) if self.income_streams_annual else 0.0
 
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # Primary field: income_streams_annual. Empty dict is a valid negative answer.
+        return CollectionSpec(required_fields=["income_streams_annual"])
+
 
 class Expenses(BaseNode):
     """
@@ -114,6 +119,11 @@ class Expenses(BaseNode):
         """Compute total monthly expenses from categories."""
         return sum(self.monthly_expenses.values()) if self.monthly_expenses else 0.0
 
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # Primary field: monthly_expenses. Empty dict is a valid negative answer.
+        return CollectionSpec(required_fields=["monthly_expenses"])
+
 
 class Savings(BaseNode):
     """
@@ -123,3 +133,8 @@ class Savings(BaseNode):
     node_type: str = Field(default="savings", frozen=True)
     total_savings: float | None = Field(default=None, description="Total liquid savings (bank accounts, cash, emergency fund combined)")
     emergency_fund_months: int | None = Field(default=None, description="Emergency fund coverage in months of expenses (e.g., 3-6 months recommended)")
+
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # User can answer via total_savings, emergency_fund_months, or both.
+        return CollectionSpec(require_any_of=["total_savings", "emergency_fund_months"])

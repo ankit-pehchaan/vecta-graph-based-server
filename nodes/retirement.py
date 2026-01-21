@@ -9,7 +9,7 @@ from enum import Enum
 
 from pydantic import Field
 
-from nodes.base import BaseNode
+from nodes.base import BaseNode, CollectionSpec
 
 
 class SuperContributionType(str, Enum):
@@ -76,3 +76,8 @@ class Retirement(BaseNode):
             return None
         current = self.super_balance if self.super_balance is not None else 0.0
         return min(100.0, (current / self.target_retirement_amount) * 100.0)
+
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # Minimal completion: super_balance. Extra contribution details remain agent-driven.
+        return CollectionSpec(required_fields=["super_balance"])

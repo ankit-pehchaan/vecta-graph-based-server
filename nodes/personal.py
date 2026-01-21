@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import Field
 
-from nodes.base import BaseNode
+from nodes.base import BaseNode, CollectionSpec
 
 
 class EmploymentType(str, Enum):
@@ -47,4 +47,9 @@ class Personal(BaseNode):
     employment_type: EmploymentType | None = Field(default=None, description="Type of employment")
     marital_status: MaritalStatus | None = Field(default=None, description="Marital status")
     health_conditions: list[str] | None = Field(default=None, description="Health conditions affecting financial planning")
+
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # Minimal identifiers to drive relevance and downstream flow.
+        return CollectionSpec(required_fields=["age", "employment_type", "marital_status"])
 

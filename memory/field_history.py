@@ -34,12 +34,12 @@ class NodeUpdate(BaseModel):
     
     Used by StateResolverAgent to communicate extracted facts to GraphMemory.
     """
-    node_name: str = Field(description="Target node to update")
-    field_name: str = Field(description="Field within the node")
-    value: Any = Field(description="New value for the field")
-    confidence: float = Field(default=0.9, ge=0.0, le=1.0, description="Confidence in extraction")
+    node_name: str | None = Field(default=None, description="Target node to update")
+    field_name: str | None = Field(default=None, description="Field within the node")
+    value: Any | None = Field(default=None, description="New value for the field")
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="Confidence in extraction")
     temporal_context: str | None = Field(default=None, description="Temporal context: past, present, future")
-    is_correction: bool = Field(default=False, description="Is this correcting previous data?")
+    is_correction: bool | None = Field(default=None, description="Is this correcting previous data?")
     reasoning: str | None = Field(default=None, description="Why this update was extracted")
     
     class Config:

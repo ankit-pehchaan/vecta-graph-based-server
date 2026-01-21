@@ -11,3 +11,4 @@ httpx
 python-dotenv
 # OpenAI (used by agno.models.openai)
 openai
+sqlalchemy

@@ -31,6 +31,7 @@ class WSQuestion(BaseModel):
     all_collected_data: dict[str, dict[str, Any]] = {}  # All data across all nodes
     planned_target_node: str | None = None
     planned_target_field: str | None = None
+    goal_state: dict[str, Any] | None = None
 
 
 class WSComplete(BaseModel):
@@ -53,6 +54,7 @@ class WSScenarioQuestion(BaseModel):
     max_turns: int = 3
     goal_confirmed: bool | None = None
     goal_rejected: bool | None = None
+    goal_state: dict[str, Any] | None = None
 
 
 class WSError(BaseModel):
@@ -82,11 +84,14 @@ class WSCalculation(BaseModel):
 class WSVisualization(BaseModel):
     """Server → Client: Visualization data."""
     type: str = "visualization"
+    calculation_type: str | None = None
+    inputs: dict[str, Any] = {}
     chart_type: str
     data: dict[str, Any] = {}
     title: str
     description: str
     config: dict[str, Any] = {}
+    charts: list[dict[str, Any]] = []
 
 
 class WSModeSwitch(BaseModel):
@@ -100,13 +105,13 @@ class WSTraversalPaused(BaseModel):
     """Server → Client: Traversal paused notification."""
     type: str = "traversal_paused"
     paused_node: str | None = None
-    message: str = "Traversal paused. You can request calculations, visualizations, or other operations."
+    message: str = ""
 
 
 class WSResumePrompt(BaseModel):
     """Server → Client: Ask user to resume."""
     type: str = "resume_prompt"
-    message: str = "Would you like to continue financial planning, or explore something else?"
+    message: str = ""
 
 
 class WSGoalQualification(BaseModel):
@@ -115,14 +120,7 @@ class WSGoalQualification(BaseModel):
     question: str
     goal_id: str
     goal_description: str | None = None
-
-
-class WSGoalUpdate(BaseModel):
-    """Server → Client: Notify client of goal state updates."""
-    type: str = "goal_update"
-    qualified_goals: list[dict[str, Any]]
-    possible_goals: list[dict[str, Any]] = []
-    rejected_goals: list[str] = []
+    goal_state: dict[str, Any] | None = None
 
 
 # REST Schemas (for summary endpoint)

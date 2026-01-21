@@ -22,21 +22,24 @@ class ComplianceResponse(BaseModel):
     """
     Structured response from ComplianceAgent.
     """
-    approved: bool = Field(
+    approved: bool | None = Field(
+        default=None,
         description="Is the response compliant and safe to send?"
     )
-    compliant_response: str = Field(
+    compliant_response: str | None = Field(
+        default=None,
         description="The response to send (original if approved, rewritten if needed)"
     )
-    violations_found: list[str] = Field(
-        default_factory=list,
+    violations_found: list[str] | None = Field(
+        default=None,
         description="List of compliance issues found (for logging)"
     )
-    changes_made: list[str] = Field(
-        default_factory=list,
+    changes_made: list[str] | None = Field(
+        default=None,
         description="List of changes made to the response (if any)"
     )
-    reasoning: str = Field(
+    reasoning: str | None = Field(
+        default=None,
         description="Explanation of compliance check"
     )
 

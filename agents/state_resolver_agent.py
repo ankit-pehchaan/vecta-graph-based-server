@@ -24,17 +24,17 @@ from memory.graph_memory import GraphMemory
 
 class StateResolverResponse(BaseModel):
     """Structured response from StateResolverAgent."""
-    updates: list[NodeUpdate] = Field(default_factory=list)
-    answer_consumed_for_current_node: bool = Field(
-        default=False,
+    updates: list[NodeUpdate] | None = Field(default=None)
+    answer_consumed_for_current_node: bool | None = Field(
+        default=None,
         description="Did user answer the current question?"
     )
     priority_shift: list[str] | None = Field(
         default=None,
         description="Nodes requiring immediate attention due to major changes"
     )
-    conflicts_detected: bool = Field(default=False)
-    reasoning: str = Field(description="Explanation of extraction and decisions")
+    conflicts_detected: bool | None = Field(default=None)
+    reasoning: str | None = Field(default=None, description="Explanation of extraction and decisions")
 
 
 class StateResolverAgent:

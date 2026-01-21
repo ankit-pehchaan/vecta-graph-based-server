@@ -6,11 +6,10 @@ Total is derived from portfolio - never ask for total directly.
 """
 
 from enum import Enum
-from typing import Any
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
-from nodes.base import BaseNode
+from nodes.base import BaseNode, CollectionSpec
 
 
 class LiabilityType(str, Enum):
@@ -26,6 +25,33 @@ class LiabilityType(str, Enum):
     BUSINESS_LOAN = "business_loan"
     TAX_LIABILITY = "tax_liability"
     OTHER = "other"
+
+
+class LiabilityDetails(BaseModel):
+    """Typed liability entry (loan/debt details)."""
+
+    outstanding_amount: float | None = Field(
+        default=None,
+        description="Outstanding balance (dollars)",
+        json_schema_extra={"collect": True},
+    )
+    monthly_payment: float | None = Field(
+        default=None,
+        description="Monthly repayment amount (dollars), if applicable",
+        json_schema_extra={"collect": True},
+    )
+    interest_rate: float | None = Field(
+        default=None,
+        description="Interest rate as decimal (e.g., 0.065 for 6.5%), if known",
+        json_schema_extra={"collect": True},
+    )
+    remaining_term_months: int | None = Field(
+        default=None,
+        description="Remaining term in months, if known",
+        json_schema_extra={"collect": True},
+    )
+
+    model_config = {"extra": "allow"}
 
 
 class Loan(BaseNode):
@@ -57,9 +83,9 @@ class Loan(BaseNode):
     # Portfolio of liabilities by type
     # Key: LiabilityType enum value (e.g., "home_loan", "credit_card")
     # Value: dict with outstanding_amount, monthly_payment, interest_rate
-    liabilities: dict[str, dict[str, Any]] = Field(
+    liabilities: dict[str, LiabilityDetails] = Field(
         default_factory=dict,
-        description="Liabilities by type. Key is LiabilityType value, value is dict with: outstanding_amount, monthly_payment, interest_rate (as decimal)"
+        description="Liabilities by type. Key is LiabilityType value, value contains outstanding_amount plus optional repayment details."
     )
     
     # Quick-check field for whether user has any debt (helps goal deduction)
@@ -76,7 +102,7 @@ class Loan(BaseNode):
         if not self.liabilities:
             return 0.0
         return sum(
-            liability.get("outstanding_amount", 0.0)
+            (liability.get("outstanding_amount", 0.0) if isinstance(liability, dict) else getattr(liability, "outstanding_amount", 0.0))
             for liability in self.liabilities.values()
         )
     
@@ -85,6 +111,16 @@ class Loan(BaseNode):
         if not self.liabilities:
             return 0.0
         return sum(
-            liability.get("monthly_payment", 0.0)
+            (liability.get("monthly_payment", 0.0) if isinstance(liability, dict) else getattr(liability, "monthly_payment", 0.0))
             for liability in self.liabilities.values()
         )
+
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # Primary field: liabilities. Empty dict is a valid negative answer (debt-free).
+        return CollectionSpec(required_fields=["liabilities"])
+
+    @classmethod
+    def detail_portfolios(cls) -> dict[str, type[BaseModel]]:
+        # Enables orchestrator to surface missing liability subfields as dotted paths.
+        return {"liabilities": LiabilityDetails}

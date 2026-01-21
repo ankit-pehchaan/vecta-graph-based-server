@@ -26,6 +26,8 @@ INCOME STREAMS (multi-stream portfolio):
 SUPERANNUATION:
 - "My super is 150k" -> Retirement.super_balance = 150000 AND Assets.asset_current_amount["superannuation"] = 150000
 - "I salary sacrifice 500 per month" -> Retirement.salary_sacrifice_monthly = 500
+- "I personally contribute 200 per month" -> Retirement.personal_contribution_monthly = 200
+- "I add an extra 300 per month to super" -> Retirement.personal_contribution_monthly = 300 (unless stated salary sacrifice)
 - "It's with AustralianSuper" -> Retirement.super_account_type = "industry_fund"
 
 INSURANCE (portfolio with held_through):
@@ -33,6 +35,10 @@ INSURANCE (portfolio with held_through):
 - "I have life insurance through my super" -> Insurance.coverages["life"] = {{"covered_person": "self", "held_through": "super"}}
 - "We have private health" -> Insurance.coverages["private_health"] = {{"covered_person": "family", "held_through": "personal"}}
 - "Income protection through work" -> Insurance.coverages["income_protection"] = {{"held_through": "employer"}}
+- "Life cover is 500k, $60 a month" -> Insurance.coverages["life"] = {{"coverage_amount": 500000, "premium_amount": 60, "premium_frequency": "monthly"}}
+- "Income protection premium is 1200 a year" -> Insurance.coverages["income_protection"] = {{"premium_amount": 1200, "premium_frequency": "annual"}}
+- "Waiting period is 4 weeks, benefit period 2 years" -> Insurance.coverages["income_protection"] = {{"waiting_period_weeks": 4, "benefit_period_months": 24}}
+- "My health excess is 500" -> Insurance.coverages["private_health"] = {{"excess_amount": 500}}
 
 ASSETS (portfolio by category):
 - "I own a flat worth 500k" -> Assets.asset_current_amount["property"] = 500000
@@ -40,11 +46,25 @@ ASSETS (portfolio by category):
 - "About 30k in savings" -> Savings.total_savings = 30000 OR Assets.asset_current_amount["cash_deposits"] = 30000
 - "50k in shares" -> Assets.asset_current_amount["stocks_etfs"] = 50000
 
+INVESTMENTS (outside super/cash; simplified by type):
+- "I have no investments" -> Investments.investment_current_value = {{}}
+- "No direct shares or ETFs" -> Investments.investment_current_value = {{}}
+- "50k in shares" -> Investments.investment_current_value = {{"stocks": 50000}}
+- "40k in managed funds" -> Investments.investment_current_value = {{"mutual_funds": 40000}}
+- "20k in bonds" -> Investments.investment_current_value = {{"bonds": 20000}}
+- "30k in fixed deposits/term deposits" -> Investments.investment_current_value = {{"fixed_deposits": 30000}}
+- "10k in crypto" -> Investments.investment_current_value = {{"crypto": 10000}}
+- "15k in gold" -> Investments.investment_current_value = {{"gold": 15000}}
+- If user gives a single total for investments only (excluding super/savings), use {{"other": <amount>}}.
+
 LIABILITIES (portfolio by type):
 - "Home loan of 400k" -> Loan.liabilities["home_loan"] = {{"outstanding_amount": 400000}}
 - "5k on credit card" -> Loan.liabilities["credit_card"] = {{"outstanding_amount": 5000}}
 - "Still have HECS" -> Loan.liabilities["hecs_help"] = {{...}} (ask for amount)
 - "Personal loan of 20k paying 500 a month" -> Loan.liabilities["personal_loan"] = {{"outstanding_amount": 20000, "monthly_payment": 500}}
+- "Mortgage at 6.5%" -> Loan.liabilities["home_loan"] = {{"interest_rate": 0.065}}
+- "Paying 2800 per month" -> Loan.liabilities["home_loan"] = {{"monthly_payment": 2800}} (merge with existing)
+- "10 years remaining" -> Loan.liabilities["home_loan"] = {{"remaining_term_months": 120}}
 
 MARRIAGE/SPOUSE (financial only - marital status in Personal):
 - "My wife earns 80k" -> Marriage.spouse_income_annual = 80000
@@ -52,22 +72,33 @@ MARRIAGE/SPOUSE (financial only - marital status in Personal):
 - "Partner is 32" -> Marriage.spouse_age = 32
 
 DEPENDENTS (extract from context):
-- "buy property for my son" -> Dependents.has_children = true, Dependents.number_of_children >= 1
-- "my daughter's education" -> Dependents.has_children = true, Dependents.number_of_children >= 1
-- "kids are in school" -> Dependents.has_children = true
+- "buy property for my son" -> Dependents.number_of_children = 1 (or higher if "sons" plural mentioned)
+- "my daughter's education" -> Dependents.number_of_children = 1 (or higher if "daughters" plural mentioned)
+- "kids are in school" -> Dependents.number_of_children >= 1 (use specific number if mentioned, otherwise 1)
+- "I have 2 children" -> Dependents.number_of_children = 2
+- "he'll join uni" / "planning for uni" -> Dependents.child_pathway = "planning_uni"
+- "he is in uni" / "at university" -> Dependents.child_pathway = "uni"
+- "he's in school" -> Dependents.child_pathway = "school"
+- "apprenticeship" -> Dependents.child_pathway = "apprenticeship"
+- "he is working" / "job" -> Dependents.child_pathway = "work"
+- "we'll use HECS" / "HELP loan" -> Dependents.education_funding_preference = "hecs_help"
+- "we'll pay for it" / "fully parent funded" -> Dependents.education_funding_preference = "parent_funded"
+- "we'll split it" / "part HECS part us" -> Dependents.education_funding_preference = "mixed"
 - "supporting my parents" -> Dependents.supporting_parents = true
 
 ---
 
 IMPLICIT FACTS FROM GOAL STATEMENTS (Critical):
 
-When user states a goal, extract ANY implied facts:
-- "buy property for my son" → User has at least one son → Dependents.has_children = true
-- "save for daughter's wedding" → User has a daughter → Dependents.has_children = true
+When user states a goal, extract ANY implied facts EVEN if the main purpose was stating a goal:
+- "buy property for my son" → User has at least one son → Dependents.number_of_children = 1 (or higher if plural)
+- "save for daughter's wedding" → User has a daughter → Dependents.number_of_children = 1 (or higher if plural)
 - "help my parents retire" → User supports parents → Dependents.supporting_parents = true
 - "wife's medical expenses" → User is married → Personal.marital_status = "married"
+- "planning for my child's education" → Dependents.number_of_children >= 1
 
-Extract these EVEN if the main purpose was stating a goal.
+IMPORTANT: Extract these facts immediately when goals are stated, even during goal intake phase.
+This allows the ConversationAgent to ask contextually-aware questions later (e.g., "How many children do you have?" instead of "Do you have any children?").
 
 ---
 
@@ -134,6 +165,7 @@ This applies to:
 - asset_current_amount: {{"property": X, "stocks": Y, ...}}
 - liabilities: {{"home_loan": {{...}}, "credit_card": {{...}}, ...}}
 - coverages: {{"life": {{...}}, "health": {{...}}, ...}}
+- investment_current_value: {{"stocks": X, "crypto": Y, ...}}
 
 EXPENSE EXTRACTION RULES:
 
@@ -271,7 +303,7 @@ TEMPORAL REASONING:
 - "I lost my job last month" → temporal_context: "past", is_correction: true
 - "I will get a promotion" → temporal_context: "future"
 
-OUTPUT FORMAT (JSON only):
+OUTPUT FORMAT (JSON only - all fields are optional):
 
 {{
   "updates": [
@@ -290,6 +322,8 @@ OUTPUT FORMAT (JSON only):
   "conflicts_detected": false,
   "reasoning": "Extracted annual income, directly answered current question"
 }}
+
+Note: Omit fields that are not applicable (don't set them to null).
 
 EXAMPLES:
 
@@ -547,6 +581,30 @@ Output:
   "priority_shift": null,
   "conflicts_detected": false,
   "reasoning": "User confirmed they have no assets - asset_current_amount={{}} (empty dict) is sufficient. This is a complete answer - do not ask about assets again or ask for confirmation."
+}}
+
+Example 8b - Negative Answer (No Investments):
+Current Node: Investments
+Question: "Do you have any investments outside super and cash savings?"
+User: "no" or "none" or "no investments"
+Graph State: Investments node has no data yet
+Output:
+{{
+  "updates": [
+    {{
+      "node_name": "Investments",
+      "field_name": "investment_current_value",
+      "value": {{}},
+      "confidence": 0.95,
+      "temporal_context": "present",
+      "is_correction": false,
+      "reasoning": "User explicitly stated they have no investments outside super/cash - setting investment_current_value to empty dict {{}} marks this as a complete negative answer"
+    }}
+  ],
+  "answer_consumed_for_current_node": true,
+  "priority_shift": null,
+  "conflicts_detected": false,
+  "reasoning": "Negative investment answer captured; investment_current_value={{}} is sufficient and should prevent re-asking."
 }}
 
 USER MESSAGE:

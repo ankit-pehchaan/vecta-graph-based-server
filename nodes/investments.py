@@ -9,7 +9,7 @@ from enum import Enum
 
 from pydantic import Field
 
-from nodes.base import BaseNode
+from nodes.base import BaseNode, CollectionSpec
 
 
 class InvestmentType(str, Enum):
@@ -41,4 +41,9 @@ class Investments(BaseNode):
         description="Current value of investments by type. Key is InvestmentType enum value, value is total amount. Example: {'stocks': 100000, 'mutual_funds': 50000}"
     )
     total_investments: float | None = Field(default=None, description="Total value of all investments (auto-calculated)")
+
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # Primary field: investment_current_value. Empty dict is a valid negative answer.
+        return CollectionSpec(required_fields=["investment_current_value"])
 
