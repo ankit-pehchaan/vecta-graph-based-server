@@ -103,7 +103,7 @@ class ScenarioFramerAgent:
         if self._db is None:
             self._db = SqliteDb(db_file=Config.get_db_path("scenario_framer_agent.db"))
         return self._db
-
+    
     def _ensure_agent(self, instructions: str) -> Agent:
         """Ensure a single agent instance is reused for performance."""
         if not self._agent:
