@@ -88,7 +88,7 @@ class VisualizationAgent:
             instructions=prompt_template,
             output_schema=VisualizationCharts,
             markdown=False,
-            debug_mode=True,
+            debug_mode=False,
             use_json_mode=True,
         )
         return self._renderer_agent
