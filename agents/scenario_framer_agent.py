@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from agno.agent import Agent
+from agno.db.sqlite import SqliteDb
 from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, Field
 
@@ -26,13 +27,14 @@ from config import Config
 class ScenarioFramerResponse(BaseModel):
     """Structured response from ScenarioFramerAgent."""
     
-    response_text: str = Field(
+    response_text: str | None = Field(
+        default=None,
         description="The scenario question or reflection to send to the user"
     )
     
     # State tracking
-    turn_number: int = Field(
-        default=1,
+    turn_number: int | None = Field(
+        default=None,
         description="Current turn in the scenario framing flow (1-3)"
     )
     
@@ -47,21 +49,23 @@ class ScenarioFramerResponse(BaseModel):
     )
     
     # Flow control
-    should_continue: bool = Field(
-        default=True,
+    should_continue: bool | None = Field(
+        default=None,
         description="Should we continue scenario framing? False to exit back to traversal"
     )
-    ready_for_confirmation: bool = Field(
-        default=False,
+    ready_for_confirmation: bool | None = Field(
+        default=None,
         description="True if we should offer goal confirmation in this turn"
     )
     
     # Context for orchestrator
-    goal_id: str = Field(
+    goal_id: str | None = Field(
+        default=None,
         description="The goal being framed"
     )
     
-    reasoning: str = Field(
+    reasoning: str | None = Field(
+        default=None,
         description="Agent's reasoning about user's emotional state and next step"
     )
 
@@ -73,15 +77,19 @@ class ScenarioFramerAgent:
     This agent:
     - Creates personalized "what if" scenarios using actual user data
     - Helps users emotionally realize the need for a goal
-    - Handles 1-3 turn mini-dialogue before offering confirmation
+    - Handles 1-5 turn mini-dialogue before offering confirmation
     - Returns to main traversal after confirmation or rejection
     """
     
-    def __init__(self, model_id: str | None = None):
+    MAX_TURNS = 2
+    
+    def __init__(self, model_id: str | None = None, session_id: str | None = None):
         """Initialize ScenarioFramerAgent with model."""
         self.model_id = model_id or Config.MODEL_ID
+        self.session_id = session_id
         self._agent: Agent | None = None
         self._prompt_template: str | None = None
+        self._db: SqliteDb | None = None
     
     def _load_prompt(self) -> str:
         """Load prompt template from file."""
@@ -90,6 +98,12 @@ class ScenarioFramerAgent:
             self._prompt_template = prompt_path.read_text()
         return self._prompt_template
     
+    def _get_db(self) -> SqliteDb:
+        """Get or create database connection for scenario framing history."""
+        if self._db is None:
+            self._db = SqliteDb(db_file=Config.get_db_path("scenario_framer_agent.db"))
+        return self._db
+
     def _ensure_agent(self, instructions: str) -> Agent:
         """Ensure a single agent instance is reused for performance."""
         if not self._agent:
@@ -97,8 +111,10 @@ class ScenarioFramerAgent:
                 model=OpenAIChat(id=self.model_id),
                 instructions=instructions,
                 output_schema=ScenarioFramerResponse,
-                add_history_to_context=True,
-                num_history_runs=5,
+                db=self._get_db(),
+                user_id=self.session_id,
+                # Use explicit scenario_history passed by the orchestrator.
+                add_history_to_context=False,
                 markdown=False,
                 debug_mode=False,
                 use_json_mode=True,
@@ -223,7 +239,7 @@ class ScenarioFramerAgent:
             financial_context=financial_context,
             graph_snapshot=json.dumps(graph_snapshot, indent=2),
             current_turn=current_turn,
-            max_turns=3,
+            max_turns=self.MAX_TURNS,
             scenario_history=history_str,
         )
         
@@ -270,7 +286,7 @@ class ScenarioFramerAgent:
             financial_context=financial_context,
             graph_snapshot=json.dumps(graph_snapshot, indent=2),
             current_turn=1,
-            max_turns=3,
+            max_turns=self.MAX_TURNS,
             scenario_history="None (first turn)",
         )
         

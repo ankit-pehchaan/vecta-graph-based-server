@@ -20,21 +20,35 @@ from api.schemas import (
     WSTraversalPaused,
     WSVisualization,
     WSGoalQualification,
-    WSGoalUpdate,
 )
 from api.sessions import session_manager
 
 
 def _serialize_goal_state(goal_state: dict[str, Any]) -> dict[str, list]:
     """Serialize goal state with goal_ids preserved."""
-    qualified = [
-        {"goal_id": goal_id, **(data or {})}
-        for goal_id, data in (goal_state.get("qualified_goals") or {}).items()
-    ]
-    possible = [
-        {"goal_id": goal_id, **(data or {})}
-        for goal_id, data in (goal_state.get("possible_goals") or {}).items()
-    ]
+    # Handle both dict and list formats defensively
+    qualified_raw = goal_state.get("qualified_goals") or {}
+    if isinstance(qualified_raw, list):
+        # Already in array format, use as-is
+        qualified = qualified_raw
+    else:
+        # Convert dict to array format
+        qualified = [
+            {"goal_id": goal_id, **(data or {})}
+            for goal_id, data in qualified_raw.items()
+        ]
+    
+    possible_raw = goal_state.get("possible_goals") or {}
+    if isinstance(possible_raw, list):
+        # Already in array format, use as-is
+        possible = possible_raw
+    else:
+        # Convert dict to array format
+        possible = [
+            {"goal_id": goal_id, **(data or {})}
+            for goal_id, data in possible_raw.items()
+        ]
+    
     rejected = goal_state.get("rejected_goals") or []
     return {
         "qualified_goals": qualified,
@@ -139,11 +153,14 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                     # Send visualization data
                     await websocket.send_json(
                         WSVisualization(
+                            calculation_type=result.get("calculation_type"),
+                            inputs=result.get("inputs", {}),
                             chart_type=result["chart_type"],
                             data=result.get("data", {}),
                             title=result["title"],
                             description=result["description"],
                             config=result.get("config", {}),
+                            charts=result.get("charts", []),
                         ).model_dump()
                     )
                     # Send resume prompt after visualization
@@ -167,11 +184,14 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                         if result.get("can_calculate") and "chart_type" in result:
                             await websocket.send_json(
                                 WSVisualization(
+                                    calculation_type=result.get("calculation_type"),
+                                    inputs=result.get("inputs", {}),
                                     chart_type=result["chart_type"],
                                     data=result.get("data", {}),
                                     title=result.get("title", ""),
                                     description=result.get("description", ""),
                                     config=result.get("config", {}),
+                                    charts=result.get("charts", []),
                                 ).model_dump()
                             )
                             # Send resume prompt
@@ -186,21 +206,23 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                                     WSResumePrompt(message=result["resume_prompt"]).model_dump()
                                 )
                 elif mode == "goal_qualification":
+                    goal_state = None
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
                     await websocket.send_json(
                         WSGoalQualification(
                             question=result.get("question", ""),
                             goal_id=result.get("goal_id", ""),
                             goal_description=result.get("goal_description"),
+                            goal_state=goal_state,
                         ).model_dump()
                     )
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                        await websocket.send_json(
-                            WSGoalUpdate(**goal_state).model_dump()
-                        )
                 elif mode == "scenario_framing":
                     # Scenario framing for inferred goals
                     scenario_ctx = result.get("scenario_context", {})
+                    goal_state = None
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
                     await websocket.send_json(
                         WSScenarioQuestion(
                             question=result.get("question", ""),
@@ -210,13 +232,9 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                             max_turns=scenario_ctx.get("max_turns", 3),
                             goal_confirmed=scenario_ctx.get("goal_confirmed"),
                             goal_rejected=scenario_ctx.get("goal_rejected"),
+                            goal_state=goal_state,
                         ).model_dump()
                     )
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                        await websocket.send_json(
-                            WSGoalUpdate(**goal_state).model_dump()
-                        )
                 else:
                     # Normal data gathering mode
                     # Send mode switch notification if needed
@@ -227,6 +245,9 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                                 previous_mode=None,
                             ).model_dump()
                         )
+                    goal_state = None
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
                     await websocket.send_json(
                         WSQuestion(
                             question=result.get("question"),
@@ -237,13 +258,9 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                             all_collected_data=orchestrator.graph_memory.get_all_nodes_data(),
                             planned_target_node=result.get("planned_target_node"),
                             planned_target_field=result.get("planned_target_field"),
+                            goal_state=goal_state,
                         ).model_dump()
                     )
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                        await websocket.send_json(
-                            WSGoalUpdate(**goal_state).model_dump()
-                        )
             except Exception as e:
                 await websocket.send_json(
                     WSError(message=f"Failed to start session: {str(e)}").model_dump()
@@ -287,18 +304,17 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                 mode = result.get("mode", "data_gathering")
                 
                 if mode == "goal_qualification":
+                    goal_state = None
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
                     await websocket.send_json(
                         WSGoalQualification(
                             question=result.get("question", ""),
                             goal_id=result.get("goal_id", ""),
                             goal_description=result.get("goal_description"),
+                            goal_state=goal_state,
                         ).model_dump()
                     )
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                        await websocket.send_json(
-                            WSGoalUpdate(**goal_state).model_dump()
-                        )
                     continue
 
                 if mode == "visualization":
@@ -318,11 +334,14 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                     if result.get("can_calculate") and "chart_type" in result and result.get("chart_type"):
                         await websocket.send_json(
                             WSVisualization(
+                                calculation_type=result.get("calculation_type"),
+                                inputs=result.get("inputs", {}),
                                 chart_type=result["chart_type"],
                                 data=result.get("data", {}),
                                 title=result.get("title", ""),
                                 description=result.get("description", ""),
                                 config=result.get("config", {}),
+                                charts=result.get("charts", []),
                             ).model_dump()
                         )
                     
@@ -336,13 +355,16 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                         await websocket.send_json(
                             WSTraversalPaused(
                                 paused_node=orchestrator.paused_node,
-                                message="Traversal paused. Please provide the missing data to complete the calculation.",
+                                message=result.get("message", ""),
                             ).model_dump()
                         )
                 
                 elif mode == "scenario_framing":
                     # Scenario framing for inferred goals
                     scenario_ctx = result.get("scenario_context", {})
+                    goal_state = None
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
                     await websocket.send_json(
                         WSScenarioQuestion(
                             question=result.get("question", ""),
@@ -352,17 +374,16 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                             max_turns=scenario_ctx.get("max_turns", 3),
                             goal_confirmed=scenario_ctx.get("goal_confirmed"),
                             goal_rejected=scenario_ctx.get("goal_rejected"),
+                            goal_state=goal_state,
                         ).model_dump()
                     )
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                        await websocket.send_json(
-                            WSGoalUpdate(**goal_state).model_dump()
-                        )
                 
                 elif mode == "data_gathering":
                     # Send the question/response with complete flag
                     # complete=True means phase1 is done (source of truth: phase1_complete)
+                    goal_state = None
+                    if result.get("goal_state"):
+                        goal_state = _serialize_goal_state(result["goal_state"])
                     await websocket.send_json(
                         WSQuestion(
                             question=result.get("question"),
@@ -373,14 +394,9 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                             all_collected_data=orchestrator.graph_memory.get_all_nodes_data(),
                             planned_target_node=result.get("planned_target_node"),
                             planned_target_field=result.get("planned_target_field"),
+                            goal_state=goal_state,
                         ).model_dump()
                     )
-                    
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                        await websocket.send_json(
-                            WSGoalUpdate(**goal_state).model_dump()
-                        )
                     
                     # If phase1 complete, we can keep the connection open for visualizations
                     # No need to send separate WSComplete - complete flag in WSQuestion is enough

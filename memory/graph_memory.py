@@ -53,6 +53,10 @@ class GraphMemory(BaseModel):
     rejected_goals: set[str] = Field(default_factory=set)
     rejected_goal_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
     
+    # Question tracking to prevent repetition
+    # node_name -> set of field_names that have been asked
+    asked_questions: dict[str, set[str]] = Field(default_factory=dict)
+    
     def add_node_snapshot(self, node_name: str, data: dict[str, Any]) -> None:
         """Add or update a node snapshot."""
         self.node_snapshots[node_name] = data
@@ -149,18 +153,22 @@ class GraphMemory(BaseModel):
     def apply_updates(self, updates: list[NodeUpdate]) -> None:
         """
         Apply structured updates from StateResolverAgent.
-        
+
         Updates node snapshots and records history with conflict detection.
         """
         for update in updates:
+            # Skip updates with missing required fields
+            if not update.node_name or update.field_name is None:
+                continue
+
             node_name = update.node_name
             field_name = update.field_name
             new_value = update.value
-            
+
             # Initialize node snapshot if needed
             if node_name not in self.node_snapshots:
                 self.node_snapshots[node_name] = {}
-            
+
             # Get previous value
             previous_value = self.node_snapshots[node_name].get(field_name)
             
@@ -265,8 +273,22 @@ class GraphMemory(BaseModel):
     # Goal lifecycle helpers
     def add_possible_goal(self, goal_id: str, goal_data: dict[str, Any]) -> None:
         """Register a newly inferred possible goal."""
+        # Skip invalid goal_id
+        if not goal_id:
+            return
+        
+        # Skip if already qualified
         if goal_id in self.qualified_goals:
             return
+        
+        # Skip if same description already exists in qualified_goals (deduplication by description)
+        new_desc = (goal_data.get("description") or "").lower().strip()
+        if new_desc:
+            for qg_data in self.qualified_goals.values():
+                existing_desc = (qg_data.get("description") or "").lower().strip() if isinstance(qg_data, dict) else ""
+                if existing_desc and existing_desc == new_desc:
+                    return
+        
         if goal_id in self.rejected_goals:
             # Allow resurfacing if new evidence is stronger than when it was rejected
             prev = self.rejected_goal_details.get(goal_id) or {}
@@ -299,12 +321,18 @@ class GraphMemory(BaseModel):
 
     def qualify_goal(self, goal_id: str, goal_data: dict[str, Any]) -> None:
         """Mark goal as qualified (user-confirmed) with priority."""
+        # Skip invalid goal_id
+        if not goal_id:
+            return
         self.rejected_goals.discard(goal_id)
         self.possible_goals.pop(goal_id, None)
         self.qualified_goals[goal_id] = goal_data
 
     def reject_goal(self, goal_id: str) -> None:
         """Mark goal as rejected by the user."""
+        # Skip invalid goal_id
+        if not goal_id:
+            return
         self.qualified_goals.pop(goal_id, None)
         previous = self.possible_goals.pop(goal_id, None) or {}
         self.rejected_goals.add(goal_id)
@@ -315,6 +343,34 @@ class GraphMemory(BaseModel):
             "deduced_from": previous.get("deduced_from"),
             "description": previous.get("description"),
         }
+    
+    # Question tracking methods
+    def mark_question_asked(self, node: str, field: str) -> None:
+        """Mark a question as asked for a specific node and field."""
+        if node not in self.asked_questions:
+            self.asked_questions[node] = set()
+        self.asked_questions[node].add(field)
+    
+    def is_question_asked(self, node: str, field: str) -> bool:
+        """Check if a question has been asked for a specific node and field."""
+        return field in self.asked_questions.get(node, set())
+    
+    def get_unasked_fields(self, node: str, all_fields: list[str]) -> list[str]:
+        """Get fields that haven't been asked about yet for a node."""
+        asked = self.asked_questions.get(node, set())
+        return [f for f in all_fields if f not in asked]
+    
+    def get_asked_questions_dict(self) -> dict[str, list[str]]:
+        """Get asked questions as a dict with lists (for JSON serialization)."""
+        return {
+            node: list(fields) 
+            for node, fields in self.asked_questions.items()
+        }
+    
+    def clear_asked_questions_for_node(self, node: str) -> None:
+        """Clear asked questions for a node (e.g., when node data is invalidated)."""
+        if node in self.asked_questions:
+            del self.asked_questions[node]
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -338,6 +394,7 @@ class GraphMemory(BaseModel):
             "qualified_goals": self.qualified_goals,
             "rejected_goals": list(self.rejected_goals),
             "rejected_goal_details": self.rejected_goal_details,
+            "asked_questions": self.get_asked_questions_dict(),
         }
     
     @classmethod
@@ -356,6 +413,13 @@ class GraphMemory(BaseModel):
                     for h in history
                 ]
         
+        # Reconstruct asked_questions (convert lists back to sets)
+        asked_questions_data = data.get("asked_questions", {})
+        asked_questions = {
+            node: set(fields) 
+            for node, fields in asked_questions_data.items()
+        }
+        
         return cls(
             node_snapshots=data.get("node_snapshots", {}),
             edges=edges,
@@ -370,5 +434,6 @@ class GraphMemory(BaseModel):
             qualified_goals=data.get("qualified_goals", {}),
             rejected_goals=set(data.get("rejected_goals", [])),
             rejected_goal_details=data.get("rejected_goal_details", {}),
+            asked_questions=asked_questions,
         )
 

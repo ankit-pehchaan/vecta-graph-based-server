@@ -29,11 +29,14 @@ from config import Config
 
 class GoalCandidate(BaseModel):
     """Represents an inferred possible goal."""
-    goal_id: str
+    goal_id: str | None = None
     goal_type: str | None = None
     description: str | None = None
     confidence: float | None = None
     deduced_from: list[str] | None = None
+    target_amount: float | None = None
+    timeline_years: int | None = None
+    funding_method: str | None = None
 
 
 class ConversationResponse(BaseModel):
@@ -43,34 +46,36 @@ class ConversationResponse(BaseModel):
     This is the unified output that covers intent, goals, and conversation flow.
     """
     # Intent understanding
-    detected_intent: str = Field(
+    detected_intent: str | None = Field(
+        default=None,
         description="What the user is doing: goal_statement, data_input, visualization_request, confirmation, greeting, question, etc."
     )
     
     # Goal management
-    new_goals_detected: list[GoalCandidate] = Field(
-        default_factory=list,
+    new_goals_detected: list[GoalCandidate] | None = Field(
+        default=None,
         description="New goals detected from user's message (explicit or inferred)"
     )
-    goals_to_qualify: list[GoalCandidate] = Field(
-        default_factory=list,
+    goals_to_qualify: list[GoalCandidate] | None = Field(
+        default=None,
         description="Inferred goals that need user confirmation"
     )
     duplicate_goal_warning: str | None = Field(
         default=None,
         description="If user mentions a goal that already exists, explain it"
     )
-    goals_to_reject: list[str] = Field(
-        default_factory=list,
+    goals_to_reject: list[str] | None = Field(
+        default=None,
         description="Goals the user has declined"
     )
-    goals_to_confirm: dict[str, int] = Field(
-        default_factory=dict,
+    goals_to_confirm: dict[str, int] | None = Field(
+        default=None,
         description="Goals to move to qualified status with priority"
     )
     
     # Conversation
-    response_text: str = Field(
+    response_text: str | None = Field(
+        default=None,
         description="The actual response to send to the user"
     )
     question_target_node: str | None = Field(
@@ -93,26 +98,38 @@ class ConversationResponse(BaseModel):
     )
     
     # Flow control
-    needs_visualization: bool = Field(
-        default=False,
+    required_fields_by_node: dict[str, list[str]] | None = Field(
+        default=None,
+        description="Fields required to proceed, keyed by node name"
+    )
+    missing_required_fields: dict[str, list[str]] | None = Field(
+        default=None,
+        description="Missing required fields by node name"
+    )
+    needs_visualization: bool | None = Field(
+        default=None,
         description="Should we generate a visualization?"
     )
     visualization_request: str | None = Field(
         default=None,
         description="What visualization the user wants"
     )
-    phase1_complete: bool = Field(
-        default=False,
+    phase1_complete: bool | None = Field(
+        default=None,
         description="Do we have enough information for the user's goals?"
     )
     phase1_summary: str | None = Field(
         default=None,
         description="Summary of user's situation when phase1 is complete"
     )
+    goals_collection_complete: bool | None = Field(
+        default=None,
+        description="True once the user has confirmed there are no more goals to add"
+    )
     
     # Scenario framing trigger (for inferred goals)
-    trigger_scenario_framing: bool = Field(
-        default=False,
+    trigger_scenario_framing: bool | None = Field(
+        default=None,
         description="Should we trigger scenario framing for an inferred goal?"
     )
     scenario_goal: GoalCandidate | None = Field(
@@ -120,8 +137,29 @@ class ConversationResponse(BaseModel):
         description="The inferred goal to frame with scenarios (if trigger_scenario_framing is true)"
     )
     
+    # Priority Planning (node relevance decisions)
+    nodes_to_omit: list[str] | None = Field(
+        default=None,
+        description="Nodes to omit based on user context (e.g., Marriage if single)"
+    )
+    omission_reasons: dict[str, str] | None = Field(
+        default=None,
+        description="Why each node was omitted"
+    )
+    priority_order: list[str] | None = Field(
+        default=None,
+        description="Suggested order for remaining nodes based on user's goals and context"
+    )
+    
+    # Goal Deduction (inferred from data relationships)
+    inferred_goals: list[GoalCandidate] | None = Field(
+        default=None,
+        description="Goals inferred from data relationships (for scenario framing)"
+    )
+    
     # For debugging/logging
-    reasoning: str = Field(
+    reasoning: str | None = Field(
+        default=None,
         description="Agent's reasoning process"
     )
 
@@ -223,6 +261,10 @@ class ConversationAgent:
         field_history: dict[str, Any] | None = None,
         last_question: str | None = None,
         last_question_node: str | None = None,
+        goal_intake_complete: bool | None = None,
+        current_node_being_collected: str | None = None,
+        current_node_missing_fields: list[str] | None = None,
+        asked_questions: dict[str, list[str]] | None = None,
     ) -> ConversationResponse:
         """
         Process user message with full context.
@@ -253,10 +295,21 @@ class ConversationAgent:
         goal_state = self._format_goal_state(qualified_goals, possible_goals, rejected_goals)
         data_summary = self._summarize_graph_data(graph_snapshot)
         
+        # Format asked questions for prompt
+        asked_questions_formatted = "None"
+        if asked_questions:
+            parts = []
+            for node, fields in asked_questions.items():
+                if fields:
+                    parts.append(f"{node}: [{', '.join(fields)}]")
+            asked_questions_formatted = "; ".join(parts) if parts else "None"
+        
         # Build the prompt with all context
         # Note: Conversation history is automatically added by Agno via add_history_to_context
         prompt = prompt_template.format(
             user_message=user_message,
+            current_node_being_collected=current_node_being_collected or "None",
+            goal_intake_complete="true" if goal_intake_complete else "false",
             graph_snapshot=json.dumps(graph_snapshot, indent=2),
             data_summary=data_summary,
             goal_state=json.dumps(goal_state, indent=2),
@@ -269,6 +322,8 @@ class ConversationAgent:
             all_node_schemas=json.dumps(all_node_schemas, indent=2),
             last_question=last_question or "None",
             last_question_node=last_question_node or "None",
+            current_node_missing_fields=", ".join(current_node_missing_fields) if current_node_missing_fields else "None",
+            asked_questions=asked_questions_formatted,
         )
         
         agent = self._ensure_agent(prompt)

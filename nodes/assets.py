@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import Field
 
-from nodes.base import BaseNode
+from nodes.base import BaseNode, CollectionSpec
 
 
 class AssetCategory(str, Enum):
@@ -62,3 +62,8 @@ class Assets(BaseNode):
     def compute_total(self) -> float:
         """Compute total assets from all categories."""
         return sum(self.asset_current_amount.values()) if self.asset_current_amount else 0.0
+
+    @classmethod
+    def collection_spec(cls) -> CollectionSpec | None:
+        # Primary field: asset_current_amount. Empty dict is a valid negative answer.
+        return CollectionSpec(required_fields=["asset_current_amount"])
