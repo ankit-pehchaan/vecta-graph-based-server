@@ -24,6 +24,7 @@ from agents.goal_details_agent import GoalDetailsParserAgent
 from agents.goal_inference_agent import GoalInferenceAgent
 from agents.scenario_framer_agent import ScenarioFramerAgent
 from agents.state_resolver_agent import StateResolverAgent
+from agents.calculation_agent import CalculationAgent
 from agents.visualization_agent import VisualizationAgent
 from services.calculation_engine import calculate, validate_inputs
 from config import Config
@@ -77,6 +78,7 @@ class Orchestrator:
         self.goal_inference_agent = GoalInferenceAgent(model_id=model_id, session_id=session_id)
         self.goal_details_agent = GoalDetailsParserAgent(model_id=model_id)
         self.scenario_framer_agent = ScenarioFramerAgent(model_id=model_id, session_id=session_id)
+        self.calculation_agent = CalculationAgent(model_id=model_id, graph_memory=self.graph_memory)
         self.visualization_agent = VisualizationAgent(model_id=model_id, graph_memory=self.graph_memory)
         self.compliance_agent = ComplianceAgent(model_id=model_id)
         
@@ -516,16 +518,19 @@ class Orchestrator:
             missing = self._get_missing_fields_for_node_collection(node_name)
             if missing:
                 return
-        else:
-            # Fallback: schema-based (legacy)
-            schema = node_cls.model_json_schema()
-            properties = schema.get("properties", {})
-            base_fields = {"id", "node_type", "created_at", "updated_at", "metadata"}
-            for field_name in properties.keys():
-                if field_name in base_fields:
-                    continue
-                if field_name not in snapshot:
-                    return  # Node not complete
+            # No missing fields -> node is complete
+            self.graph_memory.mark_node_visited(node_name)
+            return
+
+        # Fallback: schema-based (legacy)
+        schema = node_cls.model_json_schema()
+        properties = schema.get("properties", {})
+        base_fields = {"id", "node_type", "created_at", "updated_at", "metadata"}
+        for field_name in properties.keys():
+            if field_name in base_fields:
+                continue
+            if field_name not in snapshot:
+                return  # Node not complete
 
         # Node is complete
         self.graph_memory.mark_node_visited(node_name)
@@ -1039,70 +1044,81 @@ class Orchestrator:
         if response.needs_visualization and response.visualization_request:
             self.current_mode = OrchestratorMode.VISUALIZATION
             try:
-                self.visualization_agent.update_graph_memory(self.graph_memory)
-                viz_request = self.visualization_agent.calculate_and_visualize(
-                    response.visualization_request
-                )
+                # CalculationAgent decides which calculator(s) to run and extracts inputs from graph.
+                self.calculation_agent.update_graph_memory(self.graph_memory)
+                calc_resp = self.calculation_agent.calculate(response.visualization_request)
 
-                if viz_request.can_calculate:
-                    missing = validate_inputs(viz_request.calculation_type, viz_request.inputs)
+                events: list[dict[str, Any]] = []
+                any_missing = False
+
+                for item in (calc_resp.calculations or []):
+                    # Deterministic recompute in orchestrator for robustness (agent may omit result).
+                    result = item.result or {}
+                    missing = item.missing_data or []
+
+                    if item.deterministic and item.calculation_type != "custom":
+                        missing = validate_inputs(item.calculation_type, item.inputs or {})
+                        if not missing:
+                            result = calculate(item.calculation_type, item.inputs or {})
+
+                    can_calc = (item.calculation_type == "custom" and bool(item.can_calculate)) or (not bool(missing))
                     if missing:
-                        visualization_data = {
-                            "type": "visualization",
-                            "calculation_type": viz_request.calculation_type,
-                            "can_calculate": False,
-                            "result": {},
-                            "message": viz_request.message,
+                        any_missing = True
+
+                    events.append(
+                        {
+                            "kind": "calculation",
+                            "calculation_type": item.calculation_type,
+                            "result": result,
+                            "can_calculate": can_calc,
                             "missing_data": missing,
-                            "data_used": viz_request.data_used,
+                            "message": item.formula_summary or (calc_resp.summary or "Calculation result"),
+                            "data_used": item.data_used or [],
+                            "inputs": item.inputs or {},
+                            "deterministic": bool(item.deterministic),
                         }
-                        self.traversal_paused = True
-                        self.paused_node = response.question_target_node
-                    else:
-                        result = calculate(viz_request.calculation_type, viz_request.inputs)
+                    )
+
+                    if can_calc and result:
                         chart_bundle = self.visualization_agent.generate_charts(
-                            viz_request.calculation_type,
-                            viz_request.inputs,
+                            item.calculation_type,
+                            item.inputs or {},
                             result,
-                            viz_request.data_used,
+                            item.data_used or [],
                         )
                         charts = chart_bundle.charts or []
                         first_chart = charts[0] if charts else None
-                        visualization_data = {
-                            "type": "visualization",
-                            "calculation_type": viz_request.calculation_type,
-                            "inputs": viz_request.inputs,
-                            "result": result,
-                            "can_calculate": True,
-                            "message": chart_bundle.message,
-                            "data_used": viz_request.data_used,
-                            "charts": [
-                                {
-                                    "chart_type": c.chart_type,
-                                    "data": c.data,
-                                    "title": c.title,
-                                    "description": c.description,
-                                    "config": c.config,
-                                }
-                                for c in charts
-                            ],
-                            "chart_type": first_chart.chart_type if first_chart else "",
-                            "data": first_chart.data if first_chart else {},
-                            "title": first_chart.title if first_chart else "",
-                            "description": first_chart.description if first_chart else "",
-                            "config": first_chart.config if first_chart else {},
-                            "resume_prompt": None,
-                        }
-                else:
-                    visualization_data = {
-                        "type": "visualization",
-                        "calculation_type": viz_request.calculation_type,
-                        "can_calculate": False,
-                        "result": {},
-                        "message": viz_request.message,
-                        "missing_data": viz_request.missing_data,
-                        "data_used": [],
-                    }
+                        events.append(
+                            {
+                                "kind": "visualization",
+                                "calculation_type": item.calculation_type,
+                                "inputs": item.inputs or {},
+                                "charts": [
+                                    {
+                                        "chart_type": c.chart_type,
+                                        "data": c.data,
+                                        "title": c.title,
+                                        "description": c.description,
+                                        "config": c.config,
+                                    }
+                                    for c in charts
+                                ],
+                                "chart_type": first_chart.chart_type if first_chart else "",
+                                "data": first_chart.data if first_chart else {},
+                                "title": first_chart.title if first_chart else "",
+                                "description": first_chart.description if first_chart else "",
+                                "config": first_chart.config if first_chart else {},
+                            }
+                        )
+
+                visualization_data = {
+                    "type": "visualization",
+                    "events": events,
+                    "can_calculate": not any_missing,
+                    "resume_prompt": None,
+                }
+
+                if any_missing:
                     self.traversal_paused = True
                     self.paused_node = response.question_target_node
             except Exception as e:
@@ -1158,7 +1174,10 @@ class Orchestrator:
         # Add visualization fields for websocket handler compatibility
         if visualization_data:
             result["visualization"] = visualization_data
-            # Add top-level fields for websocket handler
+            # Pass events list for multi-calc/viz support
+            if "events" in visualization_data:
+                result["events"] = visualization_data["events"]
+            # Add top-level fields for websocket handler (legacy/fallback)
             result["calculation_type"] = visualization_data.get("calculation_type", "")
             result["inputs"] = visualization_data.get("inputs", {})
             result["can_calculate"] = visualization_data.get("can_calculate", False)
@@ -1187,7 +1206,7 @@ class Orchestrator:
                 return goal_details
         
         return result
-
+    
     def _should_start_goal_details(self, response) -> bool:
         """Start goal details after traversal is finished (preferred) or after phase1 complete fallback."""
         if self._goal_details_active:

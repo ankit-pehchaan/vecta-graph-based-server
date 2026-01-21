@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from config import Config
 from memory.graph_memory import GraphMemory
+from agents.tools.calculation_engine_tool import CalculationEngineTool
 
 
 class GraphDataTool:
@@ -41,15 +42,41 @@ class GraphDataTool:
             for name in node_names
         }
 
+    def get_numeric_value(self, node_name: str, field: str, default: float = 0.0) -> float:
+        """
+        Fetch a numeric field from a node snapshot, coercing None/empty to 0.
+
+        This is intentionally simple and deterministic: it only handles direct fields.
+        """
+        data = self.graph_memory.get_node_data(node_name) or {}
+        val = data.get(field)
+        if val in (None, "", []):
+            return float(default)
+        try:
+            return float(val)
+        except Exception:
+            return float(default)
+
+
+class CalculationItem(BaseModel):
+    """One calculation (deterministic tool-backed or agent fallback)."""
+
+    calculation_type: str = Field(description="Calculator key (engine) or 'custom'")
+    inputs: dict[str, Any] = Field(default_factory=dict, description="Inputs used for the calculation")
+    result: dict[str, Any] = Field(default_factory=dict, description="Calculation results")
+    can_calculate: bool = Field(default=False, description="Whether calculation succeeded")
+    missing_data: list[str] = Field(default_factory=list, description="Missing required fields (if any)")
+    data_used: list[str] = Field(default_factory=list, description="Which nodes/fields were used")
+    deterministic: bool = Field(default=True, description="True if produced via calculation_engine tool")
+    formula_summary: str | None = Field(default=None, description="Short formula/approach summary")
+    defaulted_fields: list[str] = Field(default_factory=list, description="Which input paths were defaulted to 0")
+
 
 class CalculationResponse(BaseModel):
-    """Structured response from CalculationAgent."""
-    calculation_type: str | None = Field(default=None, description="Type of calculation performed")
-    result: dict[str, Any] | None = Field(default=None, description="Calculation results")
-    missing_data: list[str] | None = Field(default=None, description="Required nodes/data not available")
-    can_calculate: bool | None = Field(default=None, description="Whether calculation is possible")
-    message: str | None = Field(default=None, description="Human-readable explanation")
-    data_used: list[str] | None = Field(default=None, description="Which nodes were used in calculation")
+    """Structured response from CalculationAgent (supports multiple calcs)."""
+
+    calculations: list[CalculationItem] = Field(default_factory=list, description="One or more calculations")
+    summary: str | None = Field(default=None, description="Short summary across calculations")
 
 
 class CalculationAgent:
@@ -86,11 +113,11 @@ class CalculationAgent:
         
         self._agent = Agent(
             model=OpenAIChat(id=self.model_id),
-            tools=[GraphDataTool(self.graph_memory)],
+            tools=[GraphDataTool(self.graph_memory), CalculationEngineTool()],
             instructions=prompt_template,
             output_schema=CalculationResponse,
             markdown=False,
-            debug_mode=False,
+            debug_mode=True,
             use_json_mode=True
         )
         

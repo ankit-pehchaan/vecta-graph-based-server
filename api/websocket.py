@@ -318,32 +318,60 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                     continue
 
                 if mode == "visualization":
-                    # Send calculation results first
-                    await websocket.send_json(
-                        WSCalculation(
-                            calculation_type=result["calculation_type"],
-                            result=result.get("result", {}),
-                            can_calculate=result["can_calculate"],
-                            missing_data=result.get("missing_data", []),
-                            message=result["message"],
-                            data_used=result.get("data_used", []),
-                        ).model_dump()
-                    )
-                    
-                    # Then send visualization if calculation succeeded AND chart data exists
-                    if result.get("can_calculate") and "chart_type" in result and result.get("chart_type"):
+                    # New path: orchestrator may return an event list (multiple calcs/viz per user request)
+                    if isinstance(result.get("events"), list):
+                        for ev in result["events"]:
+                            if ev.get("kind") == "calculation":
+                                await websocket.send_json(
+                                    WSCalculation(
+                                        calculation_type=ev.get("calculation_type", ""),
+                                        result=ev.get("result", {}),
+                                        can_calculate=bool(ev.get("can_calculate")),
+                                        missing_data=ev.get("missing_data", []),
+                                        message=ev.get("message", ""),
+                                        data_used=ev.get("data_used", []),
+                                    ).model_dump()
+                                )
+                            elif ev.get("kind") == "visualization":
+                                await websocket.send_json(
+                                    WSVisualization(
+                                        calculation_type=ev.get("calculation_type"),
+                                        inputs=ev.get("inputs", {}),
+                                        chart_type=ev.get("chart_type", ""),
+                                        data=ev.get("data", {}),
+                                        title=ev.get("title", ""),
+                                        description=ev.get("description", ""),
+                                        config=ev.get("config", {}),
+                                        charts=ev.get("charts", []),
+                                    ).model_dump()
+                                )
+                    else:
+                        # Legacy single-calculation path
                         await websocket.send_json(
-                            WSVisualization(
-                                calculation_type=result.get("calculation_type"),
-                                inputs=result.get("inputs", {}),
-                                chart_type=result["chart_type"],
-                                data=result.get("data", {}),
-                                title=result.get("title", ""),
-                                description=result.get("description", ""),
-                                config=result.get("config", {}),
-                                charts=result.get("charts", []),
+                            WSCalculation(
+                                calculation_type=result["calculation_type"],
+                                result=result.get("result", {}),
+                                can_calculate=result["can_calculate"],
+                                missing_data=result.get("missing_data", []),
+                                message=result["message"],
+                                data_used=result.get("data_used", []),
                             ).model_dump()
                         )
+                        
+                        # Then send visualization if calculation succeeded AND chart data exists
+                        if result.get("can_calculate") and "chart_type" in result and result.get("chart_type"):
+                            await websocket.send_json(
+                                WSVisualization(
+                                    calculation_type=result.get("calculation_type"),
+                                    inputs=result.get("inputs", {}),
+                                    chart_type=result["chart_type"],
+                                    data=result.get("data", {}),
+                                    title=result.get("title", ""),
+                                    description=result.get("description", ""),
+                                    config=result.get("config", {}),
+                                    charts=result.get("charts", []),
+                                ).model_dump()
+                            )
                     
                     # Send resume prompt if calculation succeeded
                     if result.get("can_calculate") and result.get("resume_prompt"):
