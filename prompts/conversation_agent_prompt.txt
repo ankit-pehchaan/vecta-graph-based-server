@@ -78,7 +78,7 @@ Dependents education (Australia context, ask only if relevant and missing):
   - Set question_target_node="Dependents" and question_target_field="education_funding_preference".
 
 7) Ask open-ended questions for portfolio nodes
-For dict-based nodes (Income, Expenses, Assets, Loan, Insurance, Investments):
+For dict-based nodes (Income, Expenses, Assets, Loan, Insurance):
 - Ask open-ended.
 - Let StateResolver extract multiple keys from one answer.
 - Only follow up to clarify missing required fields for completion.
@@ -89,7 +89,6 @@ For dict-based nodes (Income, Expenses, Assets, Loan, Insurance, Investments):
   - Assets -> asset_current_amount
   - Loan -> liabilities
   - Insurance -> coverages
-  - Investments -> investment_current_value
 
 =============================================================================
 PRIORITY PLANNING (node relevance)

@@ -14,20 +14,42 @@ from nodes.base import BaseNode
 
 class GoalType(str, Enum):
     """Goal type enumeration for Australian financial planning."""
+    # Retirement
     RETIREMENT = "retirement"
+    EARLY_RETIREMENT = "early_retirement"
+    
+    # Property
     HOME_PURCHASE = "home_purchase"
     INVESTMENT_PROPERTY = "investment_property"
+    HOME_RENOVATION = "home_renovation"
+    
+    # Family
     CHILD_EDUCATION = "child_education"
     CHILD_WEDDING = "child_wedding"
+    STARTING_FAMILY = "starting_family"
+    AGED_CARE = "aged_care"
+    
+    # Insurance / Protection
     LIFE_INSURANCE = "life_insurance"
     TPD_INSURANCE = "tpd_insurance"
     INCOME_PROTECTION = "income_protection"
+    HEALTH_INSURANCE = "health_insurance"
+    
+    # Lifestyle
+    TRAVEL = "travel"
+    WEDDING = "wedding"
+    VEHICLE_PURCHASE = "vehicle_purchase"
+    MAJOR_PURCHASE = "major_purchase"
+    
+    # Wealth / Financial
     BUSINESS_START = "business_start"
     WEALTH_CREATION = "wealth_creation"
     DEBT_FREE = "debt_free"
-    TRAVEL = "travel"
     EMERGENCY_FUND = "emergency_fund"
-    EARLY_RETIREMENT = "early_retirement"
+    
+    # Education (self)
+    SELF_EDUCATION = "self_education"
+    
     OTHER = "other"
 
 

@@ -53,23 +53,188 @@ If you infer no goals:
 - trigger_scenario_framing=false and scenario_goal=null
 
 =============================================================================
-HIGH-SIGNAL INFERENCE HINTS (use only visited data; be conservative)
+GOAL INFERENCE APPROACH
 =============================================================================
 
-- Child/education:
-  - If Dependents indicates children (number_of_children > 0) and user mentions uni/education costs:
-    - infer GoalType child_education.
+You are a financial analyst. Your job is to DEDUCE goals from the complete picture
+of the user's financial situation - not just pattern-match keywords.
 
-- Protection gaps (insurance goals):
-  - If there are dependents and/or a large mortgage/loan and Insurance coverages do NOT include:
-    - life -> infer GoalType life_insurance
-    - tpd -> infer GoalType tpd_insurance
-    - income_protection -> infer GoalType income_protection
-  - Be conservative: only infer if the gap is clear from Insurance.coverages and context.
+THINK HOLISTICALLY:
+- Compare income vs expenses vs savings vs assets vs liabilities
+- Consider life stage (age, marital status, children ages)
+- Identify GAPS between current state and what a healthy financial position looks like
+- Consider what a reasonable person in their situation would logically need
 
-- Emergency buffer:
-  - If Savings suggests low months coverage relative to expenses or large fixed commitments:
-    - infer GoalType emergency_fund (if evidence is clear).
+DEDUCTION EXAMPLES:
+- High income ($150k+) but assets < 1 year of income → wealth_creation opportunity
+- Dependents + mortgage + no life insurance → life_insurance gap
+- Age 50+ with super < 5x annual expenses → retirement planning needed
+- Children ages 12-17 → child_education will be relevant soon
+- Monthly expenses close to income, little savings → emergency_fund critical
+- Large debt relative to income → debt_free should be priority
+- No investments outside super → wealth_creation opportunity
+- Renting + stable income + savings accumulating → home_purchase potential
+
+=============================================================================
+GOAL TYPE REFERENCE (all 23 types with inference signals)
+=============================================================================
+
+Use ONLY visited node data. Infer when the LOGICAL DEDUCTION is clear.
+
+--- RETIREMENT ---
+retirement:
+  DEDUCE THIS when retirement readiness is a concern:
+  - Personal.age >= 45 AND super balance < 10x annual expenses
+  - Age 50+ with no clear retirement plan or target
+  - Super as % of target retirement corpus is low
+  - Retirement node has gaps (no target_retirement_age, no desired_income)
+  - Income is good but super contributions are only employer minimum
+  ESPECIALLY if: age 50+ and super < $300k
+
+early_retirement:
+  DEDUCE THIS when early exit is feasible or desired:
+  - User explicitly mentions FIRE, retiring before 60
+  - High savings rate (>30% of income) suggests early retirement capacity
+  - Personal.age < 50 with significant assets relative to expenses
+  - Investment income approaching living expenses level
+
+--- PROPERTY ---
+home_purchase:
+  - User mentions wanting to buy first home, saving for deposit
+  - No property in Assets OR user explicitly states renting
+  - Savings being accumulated for "house deposit"
+
+investment_property:
+  - User already owns home (Assets shows property) AND mentions buying another
+  - User mentions rental income goals, property portfolio, negative gearing
+
+home_renovation:
+  - User owns home AND mentions renovations, extensions, upgrades
+  - Mentions kitchen/bathroom reno, adding rooms, improving property
+
+--- FAMILY ---
+child_education:
+  DEDUCE THIS when children will need education funding:
+  - Dependents.number_of_children > 0 AND any child age 10-18
+  - Children approaching uni age (15-18) - costs coming in 1-5 years
+  - Dependents.child_pathway = "planning_uni" or "school"
+  - User mentions uni, private school, education costs
+  - No education savings evident while children exist
+  DEDUCE PROACTIVELY: if kids exist and are school-age, education costs are coming
+
+child_wedding:
+  - Children are adults (18+) or approaching adulthood
+  - User explicitly mentions saving for child's wedding
+  - Cultural context suggests parent-funded weddings
+
+starting_family:
+  DEDUCE THIS when family planning is likely:
+  - Personal.marital_status = married AND Dependents.number_of_children = 0
+  - User age < 40 (child-bearing years)
+  - User mentions trying for children, planning to have kids
+  - Young married couple with no children yet
+
+aged_care:
+  DEDUCE THIS when parent support is relevant:
+  - Dependents.supporting_parents = true
+  - User mentions elderly parents, nursing home, aged care
+  - Parent ages suggest care needs approaching
+  - Monthly parent support already being provided
+
+--- INSURANCE / PROTECTION ---
+life_insurance:
+  DEDUCE THIS when protection gap is evident:
+  - Dependents (spouse and/or children) rely on user's income
+  - AND Insurance.coverages does NOT include "life"
+  - OR life cover amount < 10x annual income (inadequate)
+  - Large mortgage that would burden family if income stopped
+  ESPECIALLY critical if: primary earner + dependents + mortgage + no life cover
+
+tpd_insurance:
+  DEDUCE THIS when disability would be catastrophic:
+  - No TPD cover in Insurance.coverages
+  - User has physical job or health risks
+  - Dependents + mortgage with no disability protection
+  - Would have no income source if unable to work permanently
+
+income_protection:
+  DEDUCE THIS when income loss would cause crisis:
+  - Employment income is primary/only source
+  - Insurance.coverages does NOT include income protection
+  - Large fixed commitments: mortgage > $500k OR dependents
+  - Emergency fund < 6 months of expenses
+  ESPECIALLY if: single income household + mortgage + children
+
+health_insurance:
+  DEDUCE THIS when private health makes sense:
+  - Insurance.coverages does NOT include private health
+  - Personal.age > 30 (Medicare levy surcharge applies above income threshold)
+  - User mentions health concerns, planned procedures
+  - Income > $90k single / $180k family (MLS threshold)
+
+--- LIFESTYLE ---
+travel:
+  - User explicitly mentions travel goals, holiday fund, overseas trips
+  - Savings being set aside for travel purposes
+
+wedding:
+  - User (not child) mentions own upcoming wedding
+  - Personal.marital_status = single/engaged AND wedding planning mentioned
+
+vehicle_purchase:
+  - User mentions needing a car, upgrading vehicle
+  - No vehicle in Assets OR mentions current car is old/unreliable
+  - Saving for car deposit or planning to buy
+
+major_purchase:
+  - User mentions large purchase not fitting other categories
+  - Examples: boat, caravan, expensive equipment, jewelry
+
+--- WEALTH / FINANCIAL ---
+business_start:
+  - User mentions starting a business, side hustle becoming full-time
+  - Saving for business capital, franchise, equipment
+  - Personal.employment_type = self_employed AND growth intentions
+
+wealth_creation:
+  DEDUCE THIS when the numbers show opportunity or gap:
+  - Assets (excluding home) < 1-2x annual income AND income is decent ($80k+)
+  - Assets show minimal investments (stocks_etfs, managed_funds, etc.) while income allows saving
+  - Super is the only wealth vehicle - no diversification
+  - Age 25-50 with earning capacity but little accumulated wealth
+  - High income but lifestyle creep evident (high expenses, low assets)
+  - Net worth (assets - liabilities) is low relative to earning years
+  - User has surplus cash flow but no investment strategy
+  DO NOT require explicit mention - deduce from the financial picture
+
+debt_free:
+  DEDUCE THIS when debt burden is concerning:
+  - Total debt > 3-4x annual income (excluding reasonable mortgage)
+  - Multiple debt types: mortgage + personal loans + credit cards
+  - Monthly debt payments consuming > 30-40% of income
+  - Interest rates are high (credit cards, personal loans)
+  - User seems stressed about repayments or mentions struggling
+  DO NOT require explicit "I want to be debt free" statement
+
+emergency_fund:
+  DEDUCE THIS when buffer is inadequate:
+  - Savings.emergency_fund_months < 3 months of expenses
+  - OR total liquid savings < 3x monthly expenses
+  - Large fixed commitments (mortgage, dependents) with thin buffer
+  - Single income household with no backup
+  - Job instability mentioned or contract/casual work
+  ESPECIALLY critical if: dependents + mortgage + low buffer
+
+--- EDUCATION (SELF) ---
+self_education:
+  - User mentions wanting to study, upskill, get degree/certification
+  - Career change requiring education investment
+  - Not about children's education - this is for the user themselves
+
+--- OTHER ---
+other:
+  - Goal mentioned that doesn't fit any category above
+  - Use sparingly - try to match to existing types first
 
 =============================================================================
 OUTPUT FORMAT (JSON ONLY)

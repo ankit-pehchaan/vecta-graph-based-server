@@ -2,7 +2,7 @@
 UserProfile node - Root node of the financial life graph.
 
 This is the entry point that connects to all major life aspects:
-Personal, Family, Financial, Assets, Liabilities, Goals, Insurance, Investments, Retirement.
+Personal, Family, Financial, Assets, Liabilities, Goals, Insurance, Retirement.
 """
 
 from typing import Any
