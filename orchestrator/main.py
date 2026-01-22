@@ -76,7 +76,7 @@ class Orchestrator:
         self.state_resolver = StateResolverAgent(model_id=model_id)
         self.conversation_agent = ConversationAgent(model_id=model_id, session_id=session_id)
         self.goal_inference_agent = GoalInferenceAgent(model_id=model_id, session_id=session_id)
-        self.goal_details_agent = GoalDetailsParserAgent(model_id=model_id)
+        self.goal_details_agent = GoalDetailsParserAgent(model_id=model_id, session_id=session_id)
         self.scenario_framer_agent = ScenarioFramerAgent(model_id=model_id, session_id=session_id)
         self.calculation_agent = CalculationAgent(model_id=model_id, graph_memory=self.graph_memory)
         self.visualization_agent = VisualizationAgent(model_id=model_id, graph_memory=self.graph_memory)
@@ -266,8 +266,8 @@ class Orchestrator:
         if "Personal" not in visited:
             return None
 
-        # Baseline gate: do not infer goals until we have a minimum cashflow picture.
-        baseline_required = {"Personal", "Income", "Expenses", "Savings"}
+        # Baseline gate: do not infer goals until we have a complete baseline picture.
+        baseline_required = {"Personal", "Assets", "Savings", "Expenses", "Insurance"}
         if not baseline_required.issubset(visited):
             return None
 
@@ -802,12 +802,7 @@ class Orchestrator:
         if node_name == "Insurance" and field_name == "coverages":
             return (
                 "What insurance do you currently have in place? "
-                "For example: life, TPD, income protection, private health, home/car—anything you have, and roughly how it’s held (through work, super, or personally)."
-            )
-        if node_name == "Investments" and field_name == "investment_current_value":
-            return (
-                "Do you have any investments outside your super and cash savings? "
-                "For example: shares/ETFs, managed funds, bonds, crypto, gold—rough values are fine. If none, just say none."
+                "For example: life, TPD, income protection, private health, home/car—anything you have, and roughly how it's held (through work, super, or personally)."
             )
 
         # Schema-driven fallback
@@ -1093,26 +1088,26 @@ class Orchestrator:
                                 "kind": "visualization",
                                 "calculation_type": item.calculation_type,
                                 "inputs": item.inputs or {},
-                                "charts": [
-                                    {
-                                        "chart_type": c.chart_type,
-                                        "data": c.data,
-                                        "title": c.title,
-                                        "description": c.description,
-                                        "config": c.config,
-                                    }
-                                    for c in charts
-                                ],
-                                "chart_type": first_chart.chart_type if first_chart else "",
-                                "data": first_chart.data if first_chart else {},
-                                "title": first_chart.title if first_chart else "",
-                                "description": first_chart.description if first_chart else "",
-                                "config": first_chart.config if first_chart else {},
-                            }
+                            "charts": [
+                                {
+                                    "chart_type": c.chart_type,
+                                    "data": c.data,
+                                    "title": c.title,
+                                    "description": c.description,
+                                    "config": c.config,
+                                }
+                                for c in charts
+                            ],
+                            "chart_type": first_chart.chart_type if first_chart else "",
+                            "data": first_chart.data if first_chart else {},
+                            "title": first_chart.title if first_chart else "",
+                            "description": first_chart.description if first_chart else "",
+                            "config": first_chart.config if first_chart else {},
+                        }
                         )
 
-                visualization_data = {
-                    "type": "visualization",
+                    visualization_data = {
+                        "type": "visualization",
                     "events": events,
                     "can_calculate": not any_missing,
                     "resume_prompt": None,
@@ -1208,7 +1203,13 @@ class Orchestrator:
         return result
     
     def _should_start_goal_details(self, response) -> bool:
-        """Start goal details after traversal is finished (preferred) or after phase1 complete fallback."""
+        """
+        Start goal details collection only when:
+        1. Not already in goal details/scenario mode
+        2. No pending scenarios in queue
+        3. ALL pending nodes have been visited (traversal complete)
+        4. OR ConversationAgent explicitly sets phase1_complete
+        """
         if self._goal_details_active:
             return False
         if self._scenario_framing_active:
@@ -1216,12 +1217,12 @@ class Orchestrator:
         if self._scenario_goal_queue:
             return False
 
-        # Preferred: traversal finished
+        # Only start when ALL pending nodes are visited
         traversal_done = len(self.graph_memory.pending_nodes) == 0
         if traversal_done:
             return True
 
-        # Fallback: phase1_complete and no more scenarios pending
+        # Fallback: ConversationAgent explicitly says phase1 is complete
         return bool(getattr(response, "phase1_complete", False))
 
     def _get_goal_details_queue(self) -> list[str]:

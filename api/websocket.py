@@ -372,20 +372,20 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                                     charts=result.get("charts", []),
                                 ).model_dump()
                             )
-                    
-                    # Send resume prompt if calculation succeeded
-                    if result.get("can_calculate") and result.get("resume_prompt"):
-                        await websocket.send_json(
-                            WSResumePrompt(message=result["resume_prompt"]).model_dump()
-                        )
-                    # If missing data, traversal might be paused
-                    elif not result.get("can_calculate") and orchestrator.traversal_paused:
-                        await websocket.send_json(
-                            WSTraversalPaused(
-                                paused_node=orchestrator.paused_node,
-                                message=result.get("message", ""),
-                            ).model_dump()
-                        )
+                        
+                        # Send resume prompt if calculation succeeded
+                        if result.get("can_calculate") and result.get("resume_prompt"):
+                            await websocket.send_json(
+                                WSResumePrompt(message=result["resume_prompt"]).model_dump()
+                            )
+                        # If missing data, traversal might be paused
+                        elif not result.get("can_calculate") and orchestrator.traversal_paused:
+                            await websocket.send_json(
+                                WSTraversalPaused(
+                                    paused_node=orchestrator.paused_node,
+                                    message=result.get("message", ""),
+                                ).model_dump()
+                            )
                 
                 elif mode == "scenario_framing":
                     # Scenario framing for inferred goals

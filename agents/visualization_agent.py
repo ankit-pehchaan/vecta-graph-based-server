@@ -71,12 +71,12 @@ class VisualizationAgent:
         self.graph_memory = graph_memory
         self._renderer_agent: Agent | None = None
         self._renderer_prompt_template: str | None = None
-    
+
     def _load_renderer_prompt(self) -> str:
         """Load renderer prompt template from file."""
         prompt_path = Path(__file__).parent.parent / "prompts" / "visualization_agent_prompt.txt"
         return prompt_path.read_text()
-    
+
     def get_renderer(self) -> Agent:
         """Get or create renderer agent (reuse for performance)."""
         if self._renderer_agent:
@@ -92,7 +92,7 @@ class VisualizationAgent:
             use_json_mode=True,
         )
         return self._renderer_agent
-    
+
     def generate_charts(
         self,
         calculation_type: str,

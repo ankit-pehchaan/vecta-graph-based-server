@@ -4,7 +4,7 @@ Financial Life Knowledge Graph - Node System (Australian Market)
 This package provides a comprehensive node-based graph structure for
 representing a user's financial life, including personal information,
 family structure, financial situation, assets, liabilities, goals,
-insurance, investments, and retirement planning.
+insurance, and retirement planning.
 
 All nodes are Pydantic BaseModel classes for validation and LLM-friendly
 serialization. Relationships are represented as separate Edge objects,
@@ -43,9 +43,6 @@ from nodes.insurance import (
     InsuranceType,
 )
 
-# Investment nodes
-from nodes.investments import InvestmentType, Investments
-
 # Retirement / Superannuation nodes (AU-specific)
 from nodes.retirement import (
     Retirement,
@@ -83,9 +80,6 @@ __all__ = [
     "InsuranceType",
     "InsuranceHolder",
     "CoveredPerson",
-    # Investments
-    "Investments",
-    "InvestmentType",
     # Retirement / Superannuation
     "Retirement",
     "SuperAccountType",

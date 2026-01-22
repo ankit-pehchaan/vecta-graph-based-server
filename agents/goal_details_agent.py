@@ -1,7 +1,7 @@
 """
 GoalDetailsParserAgent - Collects goal details (timeline + target amounts) after fact-find.
 
-This agent is stateless (no history) and is reused across goals for performance.
+This agent uses conversation history to track the goal details collection flow.
 """
 
 import json
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from agno.agent import Agent
+from agno.db.sqlite import SqliteDb
 from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, Field
 
@@ -26,10 +27,12 @@ class GoalDetailsResponse(BaseModel):
 
 
 class GoalDetailsParserAgent:
-    def __init__(self, model_id: str | None = None):
+    def __init__(self, model_id: str | None = None, session_id: str | None = None):
         self.model_id = model_id or Config.MODEL_ID
+        self.session_id = session_id
         self._agent: Agent | None = None
         self._prompt_template: str | None = None
+        self._db: SqliteDb | None = None
 
     def _load_prompt(self) -> str:
         if self._prompt_template is None:
@@ -37,13 +40,21 @@ class GoalDetailsParserAgent:
             self._prompt_template = prompt_path.read_text()
         return self._prompt_template
 
+    def _get_db(self) -> SqliteDb:
+        if self._db is None:
+            self._db = SqliteDb(db_file=Config.get_db_path("goal_details_agent.db"))
+        return self._db
+
     def _ensure_agent(self, instructions: str) -> Agent:
         if not self._agent:
             self._agent = Agent(
                 model=OpenAIChat(id=self.model_id),
                 instructions=instructions,
                 output_schema=GoalDetailsResponse,
+                db=self._get_db(),
+                user_id=self.session_id,
                 add_history_to_context=True,
+                num_history_runs=2,
                 markdown=False,
                 debug_mode=False,
                 use_json_mode=True,
