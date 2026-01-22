@@ -359,6 +359,18 @@ def detect_savings_emergency_link(user_message: str) -> bool:
         r"covers?\s+(my\s+)?emergenc",
         r"for\s+emergencies?\s+too",
         r"double[sd]?\s+as\s+(my\s+)?emergency",
+        # Additional patterns for common responses
+        r"mixed\s+(in|together)",
+        r"all\s+mixed",
+        r"nothing\s+(separate|else)",
+        r"that'?s?\s+everything",
+        r"(it'?s?|that'?s?)\s+(all|it)$",
+        r"no\s+separate",
+        r"not\s+separate",
+        r"^(yes|yeah|yep|yup|yea)$",  # Simple confirmation
+        r"^(yes|yeah|yep|yup|yea)\s*,",  # "yes, ..."
+        r"one\s+pool",
+        r"(it'?s?|that'?s?)\s+the\s+same",
     ]
 
     for pattern in link_patterns:

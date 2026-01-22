@@ -1222,6 +1222,70 @@ def _determine_field_from_question(question: str) -> Optional[str]:
     return None
 
 
+def _determine_field_from_user_message(user_message: str) -> Optional[str]:
+    """
+    Determine which profile field the USER is talking about in their message.
+
+    This is different from _determine_field_from_question because it analyzes
+    what field the USER is providing information about, not what the agent asked.
+
+    Args:
+        user_message: The user's message
+
+    Returns:
+        Field name or None if can't determine
+    """
+    if not user_message:
+        return None
+
+    message_lower = user_message.lower()
+
+    # Check for explicit field mentions - order matters (more specific first)
+    # Income
+    if any(w in message_lower for w in ["income", "salary", "earn", "making", "brings in"]):
+        return "monthly_income"
+
+    # Expenses
+    if any(w in message_lower for w in ["expense", "spend", "spending"]):
+        return "monthly_expenses"
+
+    # Emergency fund (before savings)
+    if "emergency" in message_lower:
+        return "emergency_fund"
+
+    # Savings
+    if any(w in message_lower for w in ["saving", "saved", "bank"]):
+        return "savings"
+
+    # Superannuation
+    if any(w in message_lower for w in ["super", "superannuation"]):
+        return "superannuation"
+
+    # Debts
+    if any(w in message_lower for w in ["debt", "loan", "mortgage", "owe", "hecs", "credit card"]):
+        return "debts"
+
+    # Age
+    if any(w in message_lower for w in ["years old", "age", "i'm "]) and any(c.isdigit() for c in message_lower):
+        # Check if it looks like age (has a number that could be age)
+        import re
+        age_match = re.search(r'\b(\d{1,2})\s*(years?\s*old|yo)?\b', message_lower)
+        if age_match and 18 <= int(age_match.group(1)) <= 100:
+            return "age"
+
+    # Investments
+    if any(w in message_lower for w in ["invest", "shares", "stocks", "etf"]):
+        return "investments"
+
+    # Insurance
+    if "life insurance" in message_lower:
+        return "life_insurance"
+    if any(w in message_lower for w in ["health insurance", "private health", "phi"]):
+        return "private_health_insurance"
+
+    return None
+
+
 def _handle_correction(
     user_message: str,
     classification: dict,
@@ -1405,6 +1469,19 @@ def sync_extract_financial_facts(
         )
         message_type = classification["message_type"]
         logger.info(f"[TOOL:extract_facts] Message classified as: {message_type.value} (confidence: {classification.get('confidence', 0):.2f})")
+
+        # === STEP 1.5: Detect cross-field answers (user answering different question) ===
+        if message_type == MessageType.NEW_INFORMATION:
+            user_field = _determine_field_from_user_message(user_message)
+            agent_field = _determine_field_from_question(effective_last_question)
+
+            if user_field and agent_field and user_field != agent_field:
+                # User is answering a different question than asked
+                logger.info(f"[TOOL:extract_facts] Cross-field detected: User answered {user_field} but agent asked about {agent_field}")
+                # Upgrade to CORRECTION so it gets proper handling
+                classification["message_type"] = MessageType.CORRECTION
+                classification["correction_target"] = user_field
+                message_type = MessageType.CORRECTION
 
         # === STEP 2: Handle special message types ===
 
@@ -1607,7 +1684,10 @@ If user says "I meant X", "no I said X", "actually X", or is correcting a previo
 CRITICAL INSTRUCTION - SAVINGS AND EMERGENCY FUND CLARIFICATION:
 When agent asks about emergency fund after savings was provided, handle these cases:
 
-1. SAME POOL: User says savings IS emergency fund (e.g., "that's my emergency fund", "same thing", "it covers emergencies", "yes", "that's it"):
+1. SAME POOL: User says savings IS emergency fund:
+   Examples: "that's my emergency fund", "same thing", "it covers emergencies", "yes", "that's it",
+             "mixed in", "all mixed together", "nothing separate", "that's everything", "yep",
+             "one pool", "it's the same", "yeah", "yea", "all in one"
    - Set "savings_is_emergency_fund": true
    - Set "emergency_fund_clarified": true
 
@@ -1620,9 +1700,16 @@ When agent asks about emergency fund after savings was provided, handle these ca
    - Set "savings": the general savings portion (30000) - this UPDATES the existing savings
    - Set "emergency_fund_clarified": true
 
-4. NO EMERGENCY FUND: User says no emergency fund (e.g., "no", "don't have one", "no separate fund"):
+4. NO EMERGENCY FUND: User says no emergency fund:
+   Examples: "no", "don't have one", "no separate fund", "nothing", "zero", "none", "nope"
    - Set "emergency_fund": 0
    - Set "emergency_fund_clarified": true
+
+SPECIAL CASE - "NOTHING" RESPONSES:
+When agent asked about emergency fund and user says "nothing" or similar:
+- If savings was already provided: User likely means "no separate emergency fund" → savings_is_emergency_fund: true
+- If no savings: User means no emergency fund → emergency_fund: 0
+Both cases: ALWAYS set emergency_fund_clarified: true
 
 Extract any of these fields if mentioned:
 - age (integer)
@@ -1774,6 +1861,30 @@ CRITICAL CONTEXT RULES:
    Examples:
    - Agent: "Are you starting to think about their education costs?" + User: "yes, I should plan for this" → user_goals: ["education planning"]
    - Agent: "Have you thought about life insurance?" + User: "definitely something I need" → user_goals: ["get life insurance"]
+
+CRITICAL - HANDLE USER ANSWERING DIFFERENT QUESTION:
+If user's response doesn't match the agent's last question, STILL extract the information they provided.
+The user is CORRECTING or ADDING information about a DIFFERENT field. Extract what they said, not what you asked.
+
+Examples:
+- Agent asked: "What's your emergency fund?" + User says: "Actually my income is 8k"
+  → Extract: monthly_income: 8000 (NOT emergency_fund)
+  → Also set: is_correction: true, correction_field: "monthly_income"
+
+- Agent asked: "What do you spend monthly?" + User says: "Oh and I have 15k saved"
+  → Extract: savings: 15000
+  → Also set: is_correction: true, correction_field: "savings"
+
+- Agent asked: "Any debts?" + User says: "No debts, but my super is 45k"
+  → Extract BOTH: debts: [{"type": "none", "amount": 0}], superannuation: {"balance": 45000}
+
+Keywords to detect different fields:
+- income/salary/earn/making → monthly_income
+- expense/spend → monthly_expenses
+- saving/saved/bank → savings
+- emergency → emergency_fund
+- super/superannuation → superannuation
+- debt/loan/owe → debts
 
 IMPORTANT:
 - Only extract facts explicitly mentioned or clearly implied

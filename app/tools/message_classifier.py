@@ -33,7 +33,86 @@ class MessageType(str, Enum):
 
 
 # Pattern-based quick classification (before LLM call)
-CORRECTION_PATTERNS = [
+
+# === DYNAMIC CORRECTION PATTERN GENERATION ===
+# Correction indicator words - signals that user is correcting/adding info
+CORRECTION_INDICATORS = [
+    "actually",
+    "wait",
+    "but",
+    "oh",
+    "no",
+    "sorry",
+    "hold on",
+    "let me",
+    "i meant",
+    "i mean",
+]
+
+# Financial field keywords - what fields users might mention
+FIELD_KEYWORDS = [
+    # Income
+    "income", "salary", "earn", "earning", "wage", "pay",
+    # Expenses
+    "expense", "expenses", "spend", "spending", "cost",
+    # Savings
+    "saving", "savings", "saved", "bank", "cash",
+    # Emergency fund
+    "emergency", "rainy day",
+    # Superannuation
+    "super", "superannuation", "retirement",
+    # Debts
+    "debt", "debts", "loan", "loans", "mortgage", "owe", "owing", "hecs", "credit card",
+    # Age
+    "age", "years old",
+    # Investments
+    "invest", "investment", "investments", "shares", "stocks", "etf",
+    # Insurance
+    "insurance", "life insurance", "health insurance",
+    # Dependents
+    "kid", "kids", "child", "children", "dependent", "dependents",
+    # Job
+    "job", "work", "employment", "career",
+]
+
+
+def _build_dynamic_correction_patterns() -> list[str]:
+    """
+    Dynamically generate correction patterns by combining:
+    - Correction indicators (actually, wait, but, etc.)
+    - Financial field keywords (income, savings, debt, etc.)
+
+    This makes patterns maintainable - add new keywords and patterns auto-generate.
+    """
+    patterns = []
+
+    # Build field keywords regex group: (income|salary|savings|debt|...)
+    field_group = "(" + "|".join(re.escape(kw) for kw in FIELD_KEYWORDS) + ")"
+
+    # Pattern 1: "[indicator] my [field]" - e.g., "actually my income", "wait my savings"
+    for indicator in CORRECTION_INDICATORS:
+        escaped = re.escape(indicator)
+        patterns.append(rf"\b{escaped}\b.*\bmy\s+{field_group}")
+
+    # Pattern 2: "[indicator], [field] is" - e.g., "no, income is 8k", "wait, savings is 10k"
+    for indicator in ["no", "wait", "actually", "oh", "but"]:
+        escaped = re.escape(indicator)
+        patterns.append(rf"\b{escaped}\s*,?\s*{field_group}\s+(is|are|was)")
+
+    # Pattern 3: "my [field] is actually" - e.g., "my income is actually 8k"
+    patterns.append(rf"\bmy\s+{field_group}\s+(is|are)\s+actually")
+
+    # Pattern 4: "i also have/got [field-related]" - e.g., "i also have savings", "i also got debt"
+    patterns.append(rf"\bi\s+also\s+(have|got|had)\b.*{field_group}")
+
+    # Pattern 5: "and my [field]" - e.g., "and my income is 8k"
+    patterns.append(rf"\band\s+my\s+{field_group}")
+
+    return patterns
+
+
+# Static correction patterns (explicit correction language)
+STATIC_CORRECTION_PATTERNS = [
     r"\bi\s+meant\b",
     r"\bi\s+mean\b",
     r"\bactually\b.*\bnot\b",
@@ -48,7 +127,12 @@ CORRECTION_PATTERNS = [
     r"\bhold\s+on\b.*\bnot\b",
     r"\bthat\s+was\s+wrong\b",
     r"\bi\s+misspoke\b",
+    r"\blet\s+me\s+(add|clarify)\b",
+    r"\bi\s+also\s+(have|want|need)\b",
 ]
+
+# Combine static + dynamic patterns
+CORRECTION_PATTERNS = STATIC_CORRECTION_PATTERNS + _build_dynamic_correction_patterns()
 
 SKIP_PATTERNS = [
     r"\bi\s+don'?t\s+know\b",
