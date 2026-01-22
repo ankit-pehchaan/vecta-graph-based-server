@@ -22,6 +22,8 @@ from api.schemas import (
     WSGoalQualification,
 )
 from api.sessions import session_manager
+from auth.dependencies import get_auth_service
+from auth.exceptions import AuthException
 
 
 def _serialize_goal_state(goal_state: dict[str, Any]) -> dict[str, list]:
@@ -68,6 +70,26 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
     4. Receive answers, send questions
     5. Continue until visited_all
     """
+    access_token = websocket.cookies.get("access_token")
+    if not access_token:
+        await websocket.accept()
+        await websocket.send_json(
+            WSError(message="Authentication required").model_dump()
+        )
+        await websocket.close(code=1008)
+        return
+
+    try:
+        auth_service = get_auth_service()
+        await auth_service.get_user_from_access(access_token)
+    except AuthException:
+        await websocket.accept()
+        await websocket.send_json(
+            WSError(message="Authentication required").model_dump()
+        )
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     
     orchestrator = None

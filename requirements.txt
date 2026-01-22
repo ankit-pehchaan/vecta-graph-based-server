@@ -1,6 +1,10 @@
 # Core Framework
 agno
 pydantic            
+# Auth
+python-jose[cryptography]
+passlib[bcrypt]
+email-validator
 # API Server
 fastapi
 uvicorn[standard]
@@ -12,3 +16,5 @@ python-dotenv
 # OpenAI (used by agno.models.openai)
 openai
 sqlalchemy
+pytest
+pytest-asyncio

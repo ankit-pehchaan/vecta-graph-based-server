@@ -5,9 +5,11 @@ FastAPI application for Financial Life Graph.
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.auth import router as auth_router
+from auth.dependencies import get_current_user
 from api.schemas import SummaryResponse, FieldHistoryResponse
 from api.sessions import session_manager
 from api.websocket import websocket_handler
@@ -38,6 +40,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
+
 
 @app.websocket("/ws")
 async def websocket_new_session(websocket: WebSocket):
@@ -52,7 +56,7 @@ async def websocket_existing_session(websocket: WebSocket, session_id: str):
 
 
 @app.get("/session/{session_id}/summary")
-async def get_summary(session_id: str) -> SummaryResponse:
+async def get_summary(session_id: str, _: dict = Depends(get_current_user)) -> SummaryResponse:
     """Get summary of collected data (REST endpoint for convenience)."""
     orchestrator = session_manager.get_session(session_id)
     
@@ -74,7 +78,7 @@ async def get_summary(session_id: str) -> SummaryResponse:
 
 
 @app.get("/session/{session_id}/history")
-async def get_field_history(session_id: str) -> FieldHistoryResponse:
+async def get_field_history(session_id: str, _: dict = Depends(get_current_user)) -> FieldHistoryResponse:
     """Get field history for a session."""
     orchestrator = session_manager.get_session(session_id)
     
