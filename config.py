@@ -93,7 +93,7 @@ class Config:
     DB_DIR: str = os.getenv("DB_DIR", "tmp")
     
     # API configuration
-    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://vectatech.coma.au").split(",")
+    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://vectatech.com.au,https://www.vectatech.com.au").split(",")
     
     @classmethod
     def get_db_path(cls, filename: str) -> str:
