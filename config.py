@@ -93,7 +93,7 @@ class Config:
     DB_DIR: str = os.getenv("DB_DIR", "tmp")
     
     # API configuration
-    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
+    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://vectatech.coma.au").split(",")
     
     @classmethod
     def get_db_path(cls, filename: str) -> str:
@@ -108,5 +108,14 @@ class Config:
             raise ValueError(
                 "OPENAI_API_KEY not set. Please set it in .env file or environment variable.\n"
                 "Create a .env file in the project root with: OPENAI_API_KEY=your_key_here"
+            )
+
+        # Warn about wildcard CORS with credentials (browsers reject this)
+        if "*" in cls.CORS_ORIGINS:
+            import warnings
+            warnings.warn(
+                "CORS_ORIGINS contains '*' which is incompatible with allow_credentials=True. "
+                "Set explicit origins like 'https://yourdomain.com' for production.",
+                UserWarning
             )
 
