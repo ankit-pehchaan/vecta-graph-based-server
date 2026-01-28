@@ -140,3 +140,19 @@ class FieldHistoryResponse(BaseModel):
     """Field history response with conflicts."""
     field_history: dict[str, dict[str, list[dict[str, Any]]]] = {}
     conflicts: dict[str, dict[str, dict[str, Any]]] = {}
+
+
+class ProfileResponse(BaseModel):
+    """User's financial profile data from database."""
+    user_id: int
+    node_data: dict[str, dict[str, Any]] = {}
+    qualified_goals: list[dict[str, Any]] = []
+    possible_goals: list[dict[str, Any]] = []
+    rejected_goals: list[str] = []
+
+
+class GoalResponse(BaseModel):
+    """User's financial goals."""
+    qualified_goals: list[dict[str, Any]] = []
+    possible_goals: list[dict[str, Any]] = []
+    rejected_goals: list[str] = []

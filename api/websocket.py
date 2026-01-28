@@ -79,9 +79,12 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
         await websocket.close(code=1008)
         return
 
+    # Get authenticated user
+    user_id: int | None = None
     try:
         auth_service = get_auth_service()
-        await auth_service.get_user_from_access(access_token)
+        user = await auth_service.get_user_from_access(access_token)
+        user_id = user.get("id") if user else None
     except AuthException:
         await websocket.accept()
         await websocket.send_json(
@@ -93,6 +96,7 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
     await websocket.accept()
     
     orchestrator = None
+    current_session_id: str | None = session_id
     
     is_resuming = False
     
@@ -116,9 +120,13 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                 message = json.loads(data)
                 initial_context = message.get("initial_context") or message.get("user_goal")
                 
-                # Create new session (initial_context is optional)
-                session_id = session_manager.create_session(initial_context)
-                orchestrator = session_manager.get_session(session_id)
+                # Create new session with user_id for DB persistence
+                current_session_id = session_manager.create_session(
+                    user_id=user_id,
+                    initial_context=initial_context,
+                )
+                session_id = current_session_id
+                orchestrator = session_manager.get_session(current_session_id)
                 
                 if not orchestrator:
                     await websocket.send_json(
@@ -308,6 +316,11 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                 # Process response with error handling
                 try:
                     result = orchestrator.respond(answer_msg.answer)
+                    
+                    # Persist session state after each turn (if user is authenticated)
+                    if current_session_id and user_id:
+                        session_manager.persist_session(current_session_id)
+                        
                 except RuntimeError as e:
                     # Agent parsing failed, ask user to rephrase
                     await websocket.send_json(
