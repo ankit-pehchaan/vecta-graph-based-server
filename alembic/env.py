@@ -6,7 +6,6 @@ Connects to the database and runs migrations.
 
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
@@ -36,8 +35,9 @@ from config import Config
 # This is the Alembic Config object
 config = context.config
 
-# Override sqlalchemy.url from our config
-config.set_main_option("sqlalchemy.url", Config.DATABASE_URL)
+# Note: We don't use config.set_main_option for the URL because ConfigParser
+# interprets % as interpolation syntax. Instead, we pass the URL directly
+# to engine_from_config in run_migrations_online().
 
 # Interpret the config file for Python logging
 if config.config_file_name is not None:
@@ -59,7 +59,8 @@ def run_migrations_offline() -> None:
     Calls to context.execute() here emit the given string to the
     script output.
     """
-    url = config.get_main_option("sqlalchemy.url")
+    # Use DATABASE_URL directly from config (avoids ConfigParser % interpolation issues)
+    url = Config.DATABASE_URL
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -78,9 +79,11 @@ def run_migrations_online() -> None:
     In this scenario we need to create an Engine
     and associate a connection with the context.
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    from sqlalchemy import create_engine
+
+    # Create engine directly from DATABASE_URL (avoids ConfigParser % interpolation issues)
+    connectable = create_engine(
+        Config.DATABASE_URL,
         poolclass=pool.NullPool,
     )
 

@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ./api ./api
 COPY ./agents ./agents
 COPY ./auth ./auth
+COPY ./db ./db
 COPY ./nodes ./nodes
 COPY ./memory ./memory
 COPY ./orchestrator ./orchestrator
