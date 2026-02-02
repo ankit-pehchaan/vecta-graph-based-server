@@ -758,6 +758,7 @@ class GoalFlowMixin:
             user_message="",
         )
         self._goal_details_missing_fields = agent_resp.missing_fields or []
+        self._goal_details_placeholders = agent_resp.suggested_placeholders or {}
 
         # If agent indicates done or has no missing fields and no question, skip to next goal.
         if agent_resp.done or (not self._goal_details_missing_fields and not agent_resp.question):
@@ -824,8 +825,23 @@ class GoalFlowMixin:
             user_message=user_input,
         )
         self._goal_details_missing_fields = agent_resp.missing_fields or []
+        if agent_resp.suggested_placeholders:
+            self._goal_details_placeholders = agent_resp.suggested_placeholders or {}
 
         details = agent_resp.extracted_details or {}
+        if not details and self._goal_details_placeholders:
+            outcome = self._classify_confirmation_response(user_input)
+            if outcome == "confirm":
+                details = dict(self._goal_details_placeholders)
+                agent_resp.missing_fields = []
+                agent_resp.done = True
+                self._goal_details_placeholders = {}
+            elif outcome == "reject":
+                self._goal_details_placeholders = {}
+            elif outcome == "defer":
+                agent_resp.missing_fields = []
+                agent_resp.done = True
+                self._goal_details_placeholders = {}
         if details:
             updated = dict(meta)
             updated.update(details)

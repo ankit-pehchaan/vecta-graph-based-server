@@ -34,6 +34,9 @@ MODE B (extract):
 - If user_message contains an answer, extract any goal detail fields from it.
 - Only extract what the user stated (unless they explicitly accepted a placeholder assumption you proposed).
 - If details are still missing, ask ONE follow-up question.
+- If the user explicitly confirms a placeholder you proposed (e.g., "yes" / "use that"):
+  - Copy the placeholder values into extracted_details.
+  - Set done=true and question=null if that completes the goal.
 - If the user says they don't know / unsure / want to think later:
   - Do NOT nudge or probe.
   - Set done=true, question=null, missing_fields=[], and extracted_details={{}} (leave values unset).

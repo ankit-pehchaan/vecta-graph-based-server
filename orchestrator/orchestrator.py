@@ -95,6 +95,7 @@ class Orchestrator(ContextMixin, TraversalMixin, GoalFlowMixin, VisualizationFlo
         self._goal_details_active = False
         self._goal_details_goal_id: str | None = None
         self._goal_details_missing_fields: list[str] = []
+        self._goal_details_placeholders: dict[str, Any] = {}
 
         # For backward compatibility with websocket handler
         self.traversal_paused = False
