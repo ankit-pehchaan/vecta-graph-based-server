@@ -52,10 +52,19 @@ def _serialize_goal_state(goal_state: dict[str, Any]) -> dict[str, list]:
         ]
     
     rejected = goal_state.get("rejected_goals") or []
+    deferred_raw = goal_state.get("deferred_goals") or {}
+    if isinstance(deferred_raw, list):
+        deferred = deferred_raw
+    else:
+        deferred = [
+            {"goal_id": goal_id, **(data or {})}
+            for goal_id, data in deferred_raw.items()
+        ]
     return {
         "qualified_goals": qualified,
         "possible_goals": possible,
         "rejected_goals": rejected,
+        "deferred_goals": deferred,
     }
 
 
@@ -289,6 +298,7 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                             planned_target_node=result.get("planned_target_node"),
                             planned_target_field=result.get("planned_target_field"),
                             goal_state=goal_state,
+                            goal_details=result.get("goal_details"),
                         ).model_dump()
                     )
             except Exception as e:
@@ -458,6 +468,7 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                             planned_target_node=result.get("planned_target_node"),
                             planned_target_field=result.get("planned_target_field"),
                             goal_state=goal_state,
+                            goal_details=result.get("goal_details"),
                         ).model_dump()
                     )
                     

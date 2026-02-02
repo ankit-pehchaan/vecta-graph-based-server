@@ -34,6 +34,9 @@ MODE B (extract):
 - If user_message contains an answer, extract any goal detail fields from it.
 - Only extract what the user stated (unless they explicitly accepted a placeholder assumption you proposed).
 - If details are still missing, ask ONE follow-up question.
+- If the user says they don't know / unsure / want to think later:
+  - Do NOT nudge or probe.
+  - Set done=true, question=null, missing_fields=[], and extracted_details={{}} (leave values unset).
 
 Goal details you can extract (as available):
 - target_amount (number)
@@ -44,7 +47,7 @@ Goal details you can extract (as available):
 Rules:
 - Ask at most ONE question per turn.
 - If you can infer a value from the graph, treat it only as a placeholder and request confirmation.
-- When finished for this goal, set done=true and question=null.
+- When finished for this goal (no missing fields), set done=true and question=null.
 
 =============================================================================
 OUTPUT FORMAT (JSON ONLY)

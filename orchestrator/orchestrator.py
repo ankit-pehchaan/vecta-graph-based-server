@@ -83,6 +83,7 @@ class Orchestrator(ContextMixin, TraversalMixin, GoalFlowMixin, VisualizationFlo
         self._scenario_turn = 0
         self._pending_scenario_goal: dict[str, Any] | None = None
         self._scenario_history: list[dict[str, str]] = []
+        self._scenario_waiting_confirmation = False
 
         # Priority planning state
         self._priority_planning_done = False
@@ -177,6 +178,12 @@ class Orchestrator(ContextMixin, TraversalMixin, GoalFlowMixin, VisualizationFlo
             graph_memory=self.graph_memory,
             all_node_schemas=self.get_all_node_schemas(),
         )
+        if not hasattr(state_resolution, "updates"):
+            state_resolution = type(
+                "StateResolutionFallback",
+                (),
+                {"updates": [], "priority_shift": [], "conflicts_detected": False},
+            )()
 
         # Step 2: Apply extracted facts to graph memory
         if state_resolution.updates:
