@@ -26,7 +26,7 @@ class Config:
     """Application configuration."""
     
     # Model configuration
-    MODEL_ID: str = os.getenv("MODEL_ID", "gpt-4.1")
+    MODEL_ID: str = os.getenv("MODEL_ID", "gpt-5.2")
     
     # OpenAI API Key (required for agents)
     OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")

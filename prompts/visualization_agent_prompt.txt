@@ -20,10 +20,10 @@ OUTPUT FORMAT:
   "charts": [
     {
       "chart_type": "bar|line|pie|donut",
-      "data": {},
+      "data": {{}},
       "title": "",
       "description": "",
-      "config": {}
+      "config": {{}}
     }
   ],
   "message": ""

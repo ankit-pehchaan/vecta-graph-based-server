@@ -47,6 +47,10 @@ class ScenarioFramerResponse(BaseModel):
         default=None,
         description="True if user has declined or dismissed the goal"
     )
+    goal_deferred: bool | None = Field(
+        default=None,
+        description="True if user wants to think about it later"
+    )
     
     # Flow control
     should_continue: bool | None = Field(
@@ -67,6 +71,10 @@ class ScenarioFramerResponse(BaseModel):
     reasoning: str | None = Field(
         default=None,
         description="Agent's reasoning about user's emotional state and next step"
+    )
+    defer_reason: str | None = Field(
+        default=None,
+        description="Short reason when user defers the goal"
     )
 
 

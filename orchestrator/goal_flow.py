@@ -13,6 +13,25 @@ from nodes.goals import GoalType
 class GoalFlowMixin:
     """Mixin providing goal inference and scenario framing logic."""
 
+    def _infer_goal_type(self, goal_id: str | None) -> str | None:
+        """Best-effort mapping from goal_id to goal_type."""
+        if not goal_id:
+            return None
+        gid = goal_id.lower()
+        if gid in {"retirement", "retirement_planning"}:
+            return "retirement"
+        if gid in {"buying_a_home", "buy_home", "home_purchase", "buy_property"}:
+            return "home_purchase"
+        if gid in {"investment_property", "buy_investment_property"}:
+            return "investment_property"
+        if gid in {"debt_free", "debt_reduction"}:
+            return "debt_free"
+        if gid in {"wealth_creation", "build_wealth"}:
+            return "wealth_creation"
+        if gid in {"emergency_fund", "emergency_buffer"}:
+            return "emergency_fund"
+        return None
+
     def _normalize_goal_id(self, goal_id: str | None, fallback: str | None = None) -> str | None:
         """
         Normalize a goal identifier to stable snake_case.
@@ -28,6 +47,36 @@ class GoalFlowMixin:
         raw = re.sub(r"[^a-z0-9]+", "_", raw)
         raw = re.sub(r"_+", "_", raw).strip("_")
         return raw or None
+
+    def _classify_confirmation_response(self, user_input: str) -> str:
+        """Classify a confirmation reply as confirm/reject/defer."""
+        text = (user_input or "").strip().lower()
+        if not text:
+            return "defer"
+
+        defer_markers = [
+            "not sure",
+            "unsure",
+            "maybe later",
+            "later",
+            "think about",
+            "dont know",
+            "don't know",
+            "not now",
+            "right now",
+        ]
+        if any(m in text for m in defer_markers):
+            return "defer"
+
+        yes_markers = ["yes", "yep", "yeah", "sure", "ok", "okay", "add it", "do it", "please add"]
+        if any(m in text for m in yes_markers):
+            return "confirm"
+
+        no_markers = ["no", "nope", "nah", "skip", "don't", "dont"]
+        if any(m in text for m in no_markers):
+            return "reject"
+
+        return "defer"
 
     def _goal_inference_input(self) -> dict[str, Any]:
         """Build the minimal goal inference input: visited node snapshots only + goal state."""
@@ -79,7 +128,7 @@ class GoalFlowMixin:
             return None
 
         # Baseline gate: do not infer goals until we have a complete baseline picture.
-        baseline_required = {"Personal", "Assets", "Savings", "Expenses", "Insurance"}
+        baseline_required = {"Personal", "Assets", "Savings", "Expenses", "Insurance", "Loan"}
         if not baseline_required.issubset(visited):
             return None
 
@@ -347,6 +396,7 @@ class GoalFlowMixin:
     def _start_scenario_framing(self, scenario_goal) -> dict[str, Any] | None:
         """Start scenario framing for an inferred goal."""
         self._scenario_framing_active = True
+        self._scenario_waiting_confirmation = False
         self._scenario_turn = 1
         self._scenario_history = []
         self._pending_scenario_goal = {
@@ -354,6 +404,7 @@ class GoalFlowMixin:
             "description": scenario_goal.description,
             "confidence": scenario_goal.confidence,
             "deduced_from": scenario_goal.deduced_from or [],
+            "goal_type": getattr(scenario_goal, "goal_type", None),
         }
         self.current_mode = OrchestratorMode.SCENARIO_FRAMING
 
@@ -381,6 +432,7 @@ class GoalFlowMixin:
             "upcoming_nodes": sorted(list(self.graph_memory.pending_nodes))[:5],
             "scenario_context": {
                 "goal_id": self._pending_scenario_goal["goal_id"],
+                "goal_description": self._pending_scenario_goal.get("description"),
                 "turn": self._scenario_turn,
                 "max_turns": 2,
             },
@@ -388,6 +440,58 @@ class GoalFlowMixin:
 
     def _handle_scenario_framing(self, user_input: str) -> dict[str, Any]:
         """Handle user response during scenario framing."""
+        if self._scenario_waiting_confirmation and self._pending_scenario_goal:
+            outcome = self._classify_confirmation_response(user_input)
+            scenario_goal_id = self._pending_scenario_goal.get("goal_id")
+            if outcome == "confirm" and scenario_goal_id:
+                existing = self.graph_memory.qualified_goals.get(scenario_goal_id) or {}
+                priority = existing.get("priority") or (len(self.graph_memory.qualified_goals) + 1)
+                self.graph_memory.qualify_goal(
+                    scenario_goal_id,
+                    {
+                        "description": self._pending_scenario_goal.get("description"),
+                        "confidence": self._pending_scenario_goal.get("confidence"),
+                        "deduced_from": self._pending_scenario_goal.get("deduced_from"),
+                        "goal_type": self._pending_scenario_goal.get("goal_type"),
+                        "confirmed_via": "scenario_framing",
+                        "priority": priority,
+                    }
+                )
+                ack_text = "Got it — I’ll add that as a goal."
+                scenario_response = type("ScenarioResp", (), {"goal_confirmed": True, "goal_rejected": None, "goal_deferred": None})
+            elif outcome == "reject" and scenario_goal_id:
+                self.graph_memory.reject_goal(scenario_goal_id)
+                ack_text = "No worries — we’ll leave that out for now."
+                scenario_response = type("ScenarioResp", (), {"goal_confirmed": None, "goal_rejected": True, "goal_deferred": None})
+            else:
+                if scenario_goal_id:
+                    self.graph_memory.defer_goal(
+                        scenario_goal_id,
+                        {
+                            "description": self._pending_scenario_goal.get("description"),
+                            "confidence": self._pending_scenario_goal.get("confidence"),
+                            "deduced_from": self._pending_scenario_goal.get("deduced_from"),
+                            "goal_type": self._pending_scenario_goal.get("goal_type"),
+                            "confirmed_via": "scenario_framing",
+                        },
+                        reason="User unsure during confirmation",
+                    )
+                ack_text = "No worries — I’ll park that and we can revisit later."
+                scenario_response = type("ScenarioResp", (), {"goal_confirmed": None, "goal_rejected": None, "goal_deferred": True})
+
+            compliant = self.compliance_agent.review(
+                response_text=ack_text,
+                response_type="scenario",
+                context_summary=f"Scenario confirmation for {scenario_goal_id}",
+            )
+            self._scenario_waiting_confirmation = False
+            exit_result = self._exit_scenario_framing(compliant.compliant_response, scenario_response)
+            next_scenario = self._start_next_scenario_from_queue()
+            if next_scenario:
+                next_scenario["question"] = f"{compliant.compliant_response}\n\n{next_scenario.get('question') or ''}".strip()
+                return next_scenario
+            return exit_result
+
         self._scenario_turn += 1
 
         self._scenario_history.append({"role": "user", "content": user_input})
@@ -419,16 +523,76 @@ class GoalFlowMixin:
                     "description": self._pending_scenario_goal.get("description") if self._pending_scenario_goal else None,
                     "confidence": self._pending_scenario_goal.get("confidence") if self._pending_scenario_goal else None,
                     "deduced_from": self._pending_scenario_goal.get("deduced_from") if self._pending_scenario_goal else None,
+                    "goal_type": self._pending_scenario_goal.get("goal_type") if self._pending_scenario_goal else None,
                     "confirmed_via": "scenario_framing",
                     "priority": priority,
                 }
             )
         elif response.goal_rejected and scenario_goal_id:
             self.graph_memory.reject_goal(scenario_goal_id)
+        elif response.goal_deferred and scenario_goal_id:
+            self.graph_memory.defer_goal(
+                scenario_goal_id,
+                {
+                    "description": self._pending_scenario_goal.get("description") if self._pending_scenario_goal else None,
+                    "confidence": self._pending_scenario_goal.get("confidence") if self._pending_scenario_goal else None,
+                    "deduced_from": self._pending_scenario_goal.get("deduced_from") if self._pending_scenario_goal else None,
+                    "goal_type": self._pending_scenario_goal.get("goal_type") if self._pending_scenario_goal else None,
+                    "confirmed_via": "scenario_framing",
+                },
+                reason=response.defer_reason,
+            )
+
+        # If we reach turn 2 without a confirmation prompt, force a confirmation question.
+        if (
+            self._scenario_turn >= 2
+            and not response.ready_for_confirmation
+            and not response.goal_confirmed
+            and not response.goal_rejected
+            and not response.goal_deferred
+        ):
+            response.ready_for_confirmation = True
+            response.response_text = "Want me to add this as a goal, or should we leave it out for now?"
+            compliant = self.compliance_agent.review(
+                response_text=response.response_text,
+                response_type="scenario",
+                context_summary=f"Scenario confirmation for {scenario_goal_id}",
+            )
+
+        waiting_for_confirmation = (
+            response.ready_for_confirmation
+            and not response.goal_confirmed
+            and not response.goal_rejected
+            and not response.goal_deferred
+        )
+        if waiting_for_confirmation:
+            self._scenario_waiting_confirmation = True
+            return {
+                "mode": "scenario_framing",
+                "question": compliant.compliant_response,
+                "node_name": None,
+                "complete": False,
+                "goal_state": self._goal_state_payload_arrays(),
+                "all_collected_data": self.graph_memory.get_all_nodes_data(),
+                "extracted_data": {},
+                "upcoming_nodes": sorted(list(self.graph_memory.pending_nodes))[:5],
+                "scenario_context": {
+                    "goal_id": self._pending_scenario_goal["goal_id"],
+                    "goal_description": self._pending_scenario_goal.get("description"),
+                    "turn": self._scenario_turn,
+                    "max_turns": 2,
+                },
+            }
+
+        if response.goal_deferred and response.should_continue:
+            response.should_continue = False
 
         if not response.should_continue or self._scenario_turn >= 2:
             exit_result = self._exit_scenario_framing(compliant.compliant_response, response)
             next_scenario = self._start_next_scenario_from_queue()
+            if next_scenario and (response.goal_confirmed or response.goal_rejected or response.goal_deferred):
+                next_scenario["question"] = f"{compliant.compliant_response}\n\n{next_scenario.get('question') or ''}".strip()
+                return next_scenario
             return next_scenario or exit_result
 
         return {
@@ -442,6 +606,7 @@ class GoalFlowMixin:
             "upcoming_nodes": sorted(list(self.graph_memory.pending_nodes))[:5],
             "scenario_context": {
                 "goal_id": self._pending_scenario_goal["goal_id"],
+                "goal_description": self._pending_scenario_goal.get("description"),
                 "turn": self._scenario_turn,
                 "max_turns": 2,
                 "goal_confirmed": response.goal_confirmed,
@@ -473,6 +638,7 @@ class GoalFlowMixin:
                 "goal_id": goal_id,
                 "confirmed": scenario_response.goal_confirmed if scenario_response else None,
                 "rejected": scenario_response.goal_rejected if scenario_response else None,
+                "deferred": scenario_response.goal_deferred if scenario_response else None,
             },
         }
 
@@ -525,11 +691,17 @@ class GoalFlowMixin:
                 continue
             if not isinstance(meta, dict):
                 meta = {}
+            if meta.get("details_complete") or meta.get("details_deferred"):
+                continue
             target_amount = meta.get("target_amount")
             target_year = meta.get("target_year")
             timeline_years = meta.get("timeline_years")
             target_months = meta.get("target_months")
-            goal_type = (meta.get("goal_type") or "").lower()
+            goal_type = (meta.get("goal_type") or self._infer_goal_type(gid) or "").lower()
+            if goal_type and goal_type != (meta.get("goal_type") or "").lower():
+                updated = dict(meta)
+                updated["goal_type"] = goal_type
+                self.graph_memory.qualified_goals[gid] = updated
 
             needs_timeline_or_year = goal_type in {
                 "home_purchase",
@@ -552,6 +724,12 @@ class GoalFlowMixin:
                 if target_amount is None:
                     missing = True
                 if target_year is None and timeline_years is None and goal_type not in {"life_insurance", "tpd_insurance", "income_protection"}:
+                    missing = True
+            else:
+                # If we don't recognize the goal type, still collect basic amount/timeline.
+                if target_amount is None:
+                    missing = True
+                if target_year is None and timeline_years is None:
                     missing = True
 
             if missing:
@@ -581,7 +759,30 @@ class GoalFlowMixin:
         )
         self._goal_details_missing_fields = agent_resp.missing_fields or []
 
-        question = agent_resp.question or f"For your goal '{goal_id}', what target amount and timeframe are you aiming for?"
+        # If agent indicates done or has no missing fields and no question, skip to next goal.
+        if agent_resp.done or (not self._goal_details_missing_fields and not agent_resp.question):
+            updated = dict(meta)
+            updated["details_complete"] = True
+            if not updated.get("target_amount") and not updated.get("target_year") and not updated.get("timeline_years") and not updated.get("target_months"):
+                updated["details_deferred"] = True
+            self.graph_memory.qualified_goals[goal_id] = updated
+            self._goal_details_active = False
+            self._goal_details_goal_id = None
+            self._goal_details_missing_fields = []
+            return self._start_goal_details()
+
+        question = agent_resp.question
+        if not question:
+            updated = dict(meta)
+            updated["details_complete"] = True
+            if not updated.get("target_amount") and not updated.get("target_year") and not updated.get("timeline_years") and not updated.get("target_months"):
+                updated["details_deferred"] = True
+            self.graph_memory.qualified_goals[goal_id] = updated
+            # Avoid sending empty prompts; move on to next goal
+            self._goal_details_active = False
+            self._goal_details_goal_id = None
+            self._goal_details_missing_fields = []
+            return self._start_goal_details()
         compliant = self.compliance_agent.review(
             response_text=question,
             response_type="conversation",
@@ -622,6 +823,7 @@ class GoalFlowMixin:
             graph_snapshot=self.graph_memory.get_all_nodes_data(),
             user_message=user_input,
         )
+        self._goal_details_missing_fields = agent_resp.missing_fields or []
 
         details = agent_resp.extracted_details or {}
         if details:
@@ -629,28 +831,41 @@ class GoalFlowMixin:
             updated.update(details)
             self.graph_memory.qualified_goals[goal_id] = updated
 
+        if agent_resp.done:
+            updated = dict(self.graph_memory.qualified_goals.get(goal_id) or meta)
+            updated["details_complete"] = True
+            if not updated.get("target_amount") and not updated.get("target_year") and not updated.get("timeline_years") and not updated.get("target_months"):
+                updated["details_deferred"] = True
+            self.graph_memory.qualified_goals[goal_id] = updated
+
+        if not agent_resp.done and not self._goal_details_missing_fields and not agent_resp.question:
+            agent_resp.done = True
+
         if not agent_resp.done:
-            question = agent_resp.question or "Got it. What’s the target amount and by when?"
-            compliant = self.compliance_agent.review(
-                response_text=question,
-                response_type="conversation",
-                context_summary=f"Goal details for {goal_id}",
-            )
-            return {
-                "mode": "data_gathering",
-                "question": compliant.compliant_response,
-                "node_name": None,
-                "complete": False,
-                "visited_all": False,
-                "goal_state": self._goal_state_payload_arrays(),
-                "all_collected_data": self.graph_memory.get_all_nodes_data(),
-                "extracted_data": {},
-                "upcoming_nodes": sorted(list(self.graph_memory.pending_nodes))[:5],
-                "goal_details": {
-                    "goal_id": goal_id,
-                    "missing_fields": agent_resp.missing_fields or [],
-                },
-            }
+            question = agent_resp.question
+            if not question:
+                agent_resp.done = True
+            else:
+                compliant = self.compliance_agent.review(
+                    response_text=question,
+                    response_type="conversation",
+                    context_summary=f"Goal details for {goal_id}",
+                )
+                return {
+                    "mode": "data_gathering",
+                    "question": compliant.compliant_response,
+                    "node_name": None,
+                    "complete": False,
+                    "visited_all": False,
+                    "goal_state": self._goal_state_payload_arrays(),
+                    "all_collected_data": self.graph_memory.get_all_nodes_data(),
+                    "extracted_data": {},
+                    "upcoming_nodes": sorted(list(self.graph_memory.pending_nodes))[:5],
+                    "goal_details": {
+                        "goal_id": goal_id,
+                        "missing_fields": self._goal_details_missing_fields,
+                    },
+                }
 
         self._goal_details_active = False
         self._goal_details_goal_id = None

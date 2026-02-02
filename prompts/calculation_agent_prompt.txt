@@ -57,8 +57,8 @@ OUTPUT FORMAT (JSON ONLY):
   "calculations": [
     {
       "calculation_type": "budget|net_worth|...|custom",
-      "inputs": {},
-      "result": {},
+      "inputs": {{}},
+      "result": {{}},
       "can_calculate": true|false,
       "missing_data": [],
       "data_used": [],

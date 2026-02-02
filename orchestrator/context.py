@@ -48,6 +48,7 @@ class ContextMixin:
             "qualified_goals": self.graph_memory.qualified_goals,
             "possible_goals": self.graph_memory.possible_goals,
             "rejected_goals": list(self.graph_memory.rejected_goals),
+            "deferred_goals": self.graph_memory.deferred_goals,
         }
 
     def _goal_state_payload_arrays(self) -> dict[str, Any]:
@@ -63,8 +64,13 @@ class ContextMixin:
             {"goal_id": goal_id, **(meta or {})}
             for goal_id, meta in (self.graph_memory.possible_goals or {}).items()
         ]
+        deferred = [
+            {"goal_id": goal_id, **(meta or {})}
+            for goal_id, meta in (self.graph_memory.deferred_goals or {}).items()
+        ]
         return {
             "qualified_goals": qualified,
             "possible_goals": possible,
             "rejected_goals": list(self.graph_memory.rejected_goals),
+            "deferred_goals": deferred,
         }

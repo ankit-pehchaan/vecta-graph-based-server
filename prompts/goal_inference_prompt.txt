@@ -21,6 +21,7 @@ Goal state structure:
 - qualified_goals: already confirmed
 - possible_goals: already inferred and pending user confirmation
 - rejected_goals: explicitly declined
+- deferred_goals: user wants to think about later (do not re-infer now)
 
 =============================================================================
 YOUR TASK
@@ -30,6 +31,7 @@ YOUR TASK
 2) Be conservative: if evidence is too weak, do not infer.
 3) Do not duplicate:
    - Do NOT infer a goal_id already in qualified_goals or possible_goals.
+   - Do NOT infer a goal_id in deferred_goals (parked for later review).
    - Do NOT infer a goal_id in rejected_goals unless evidence is materially new and strong.
 4) Use goal_type from the allowed GoalType list. If none fit, use "other".
 5) For each inferred goal, provide:
@@ -149,6 +151,7 @@ life_insurance:
   - OR life cover amount < 10x annual income (inadequate)
   - Large mortgage that would burden family if income stopped
   ESPECIALLY critical if: primary earner + dependents + mortgage + no life cover
+  NOTE: If no dependents and no explicit concern, avoid inferring life_insurance.
 
 tpd_insurance:
   DEDUCE THIS when disability would be catastrophic:
@@ -156,6 +159,7 @@ tpd_insurance:
   - User has physical job or health risks
   - Dependents + mortgage with no disability protection
   - Would have no income source if unable to work permanently
+  ALSO if: large unsecured debt (personal loans) + high income + no TPD cover
 
 income_protection:
   DEDUCE THIS when income loss would cause crisis:
@@ -164,6 +168,7 @@ income_protection:
   - Large fixed commitments: mortgage > $500k OR dependents
   - Emergency fund < 6 months of expenses
   ESPECIALLY if: single income household + mortgage + children
+  ALSO if: large unsecured debt (personal loans) + high income + no income protection
 
 health_insurance:
   DEDUCE THIS when private health makes sense:
