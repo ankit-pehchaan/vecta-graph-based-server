@@ -2,7 +2,7 @@
 Family-related nodes: Marriage, Dependents.
 
 Marriage: Spouse financial details only (relationship status lives in Personal.marital_status).
-Dependents: Children and parent support information for financial planning.
+Dependents: Children information for financial planning.
 """
 
 from enum import Enum
@@ -10,7 +10,6 @@ from enum import Enum
 from pydantic import Field
 
 from nodes.base import BaseNode, CollectionCondition, CollectionSpec
-from nodes.personal import EmploymentType
 
 
 class ChildPathway(str, Enum):
@@ -41,20 +40,20 @@ class Marriage(BaseNode):
     
     node_type: str = Field(default="marriage", frozen=True)
     spouse_age: int | None = Field(default=None, description="Spouse age (for retirement planning timeline)")
-    spouse_employment_type: EmploymentType | None = Field(default=None, description="Spouse employment type (full_time, part_time, self_employed, etc.)")
     spouse_income_annual: float | None = Field(default=None, description="Spouse annual income (for household financial planning)")
+    finances_combined: bool | None = Field(default=None, description="Are your finances combined with your partner?")
 
     @classmethod
     def collection_spec(cls) -> CollectionSpec | None:
-        # Minimal: at least one spouse financial indicator (age, employment, or income).
-        return CollectionSpec(require_any_of=["spouse_age", "spouse_employment_type", "spouse_income_annual"])
+        # Minimal: at least one spouse financial indicator.
+        return CollectionSpec(require_any_of=["spouse_age", "spouse_income_annual", "finances_combined"])
 
 
 class Dependents(BaseNode):
     """
     Dependents information node.
     
-    Tracks financial impact of dependents (children, parents).
+    Tracks financial impact of dependents (children).
     Focuses on costs and dependency timeline for financial planning.
     """
     
@@ -66,16 +65,14 @@ class Dependents(BaseNode):
     education_funding_preference: EducationFundingPreference | None = Field(
         default=None, description="Preference for education funding: HECS/HELP vs parent-funded vs mixed"
     )
-    supporting_parents: bool | None = Field(default=None, description="Are you financially supporting parents?")
-    monthly_parent_support: float | None = Field(default=None, description="Monthly financial support provided to parents")
 
     @classmethod
     def collection_spec(cls) -> CollectionSpec | None:
-        # Minimal: number_of_children (0 allowed) and supporting_parents (false allowed).
+        # Minimal: number_of_children (0 allowed).
         # Conditional (mechanical): if number_of_children > 0, collect children_ages and child_pathway.
         # If child_pathway implies uni, collect funding preference.
         return CollectionSpec(
-            required_fields=["number_of_children", "supporting_parents"],
+            required_fields=["number_of_children"],
             conditional_required=[
                 CollectionCondition(
                     if_field="number_of_children",

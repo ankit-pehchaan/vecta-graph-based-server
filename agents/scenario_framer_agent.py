@@ -140,13 +140,13 @@ class ScenarioFramerAgent:
         if personal:
             age = personal.get("age")
             marital = personal.get("marital_status")
-            employment = personal.get("employment_type")
+            occupation = personal.get("occupation")
             if age:
                 summary_parts.append(f"Age: {age}")
             if marital:
                 summary_parts.append(f"Relationship: {marital}")
-            if employment:
-                summary_parts.append(f"Employment: {employment}")
+            if occupation:
+                summary_parts.append(f"Occupation: {occupation}")
         
         # Income
         income = graph_snapshot.get("Income", {})

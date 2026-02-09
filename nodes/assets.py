@@ -48,6 +48,9 @@ class Assets(BaseNode):
     
     node_type: str = Field(default="assets", frozen=True)
     
+    # Quick-check field for property ownership (determines how housing cost questions are asked)
+    has_property: bool | None = Field(default=None, description="Do you own property?")
+    
     # Portfolio of assets by category
     # Key: AssetCategory enum value (e.g., "property", "superannuation")
     # Value: Current market value

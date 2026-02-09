@@ -62,8 +62,8 @@ LIABILITIES (portfolio by type):
 
 MARRIAGE/SPOUSE (financial only - marital status in Personal):
 - "My wife earns 80k" -> Marriage.spouse_income_annual = 80000
-- "She works full time" -> Marriage.spouse_employment_type = "full_time"
 - "Partner is 32" -> Marriage.spouse_age = 32
+- "We share all our finances" -> Marriage.finances_combined = true
 
 DEPENDENTS (extract from context):
 - "buy property for my son" -> Dependents.number_of_children = 1 (or higher if "sons" plural mentioned)
@@ -78,7 +78,7 @@ DEPENDENTS (extract from context):
 - "we'll use HECS" / "HELP loan" -> Dependents.education_funding_preference = "hecs_help"
 - "we'll pay for it" / "fully parent funded" -> Dependents.education_funding_preference = "parent_funded"
 - "we'll split it" / "part HECS part us" -> Dependents.education_funding_preference = "mixed"
-- "supporting my parents" -> Dependents.supporting_parents = true
+- "supporting my parents" -> this is noted conversationally, not stored as a separate field
 
 ---
 
@@ -87,7 +87,7 @@ IMPLICIT FACTS FROM GOAL STATEMENTS (Critical):
 When user states a goal, extract ANY implied facts EVEN if the main purpose was stating a goal:
 - "buy property for my son" → User has at least one son → Dependents.number_of_children = 1 (or higher if plural)
 - "save for daughter's wedding" → User has a daughter → Dependents.number_of_children = 1 (or higher if plural)
-- "help my parents retire" → User supports parents → Dependents.supporting_parents = true
+- "help my parents retire" → Note parent support needs conversationally
 - "wife's medical expenses" → User is married → Personal.marital_status = "married"
 - "planning for my child's education" → Dependents.number_of_children >= 1
 
@@ -243,7 +243,7 @@ When user contradicts data in a way that means we need to collect entirely new i
 - No loans → Has loans: Add ["Liabilities", "Loan"]
 - No health issues → Chronic illness: Add ["Insurance"]
 - Employed → Self-employed: Add ["Business", "Assets"]
-- No parents support → Supporting parents: Update Dependents.supporting_parents
+- No parents support → Supporting parents: Note conversationally for goal inference
 
 Rule: If existing graph shows we SKIPPED a node type (null/no/none), and user now says they HAVE it, trigger priority_shift to add those nodes.
 
@@ -362,7 +362,7 @@ Output:
     }},
     {{
       "node_name": "Personal",
-      "field_name": "employment_type",
+      "field_name": "occupation",
       "value": "unemployed",
       "confidence": 0.9,
       "temporal_context": "present",

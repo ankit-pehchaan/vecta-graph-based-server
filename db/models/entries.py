@@ -111,6 +111,7 @@ class LiabilityEntry(Base):
     monthly_payment = Column(Numeric(15, 2), nullable=True)
     interest_rate = Column(Numeric(6, 4), nullable=True)  # e.g., 0.0650 for 6.5%
     remaining_term_months = Column(Integer, nullable=True)
+    repayment_type = Column(String(20), nullable=True)  # pi (Principal & Interest) or interest_only
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -139,9 +140,6 @@ class InsuranceEntry(Base):
     coverage_amount = Column(Numeric(15, 2), nullable=True)
     premium_amount = Column(Numeric(15, 2), nullable=True)
     premium_frequency = Column(String(20), nullable=True)  # weekly, monthly, annual
-    waiting_period_weeks = Column(Integer, nullable=True)  # income protection only
-    benefit_period_months = Column(Integer, nullable=True)  # income protection only
-    excess_amount = Column(Numeric(15, 2), nullable=True)  # health/home/car
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -149,4 +147,3 @@ class InsuranceEntry(Base):
 
     def __repr__(self):
         return f"<InsuranceEntry(user_id={self.user_id}, type={self.insurance_type})>"
-
