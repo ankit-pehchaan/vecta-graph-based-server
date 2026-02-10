@@ -58,12 +58,8 @@ class PersonalHandler(NodeHandler):
             data["age"] = profile.age
         if profile.occupation:
             data["occupation"] = profile.occupation
-        if profile.employment_type:
-            data["employment_type"] = profile.employment_type
         if profile.marital_status:
             data["marital_status"] = profile.marital_status
-        if profile.health_conditions:
-            data["health_conditions"] = profile.health_conditions
         return data or None
 
     def save(
@@ -78,9 +74,7 @@ class PersonalHandler(NodeHandler):
         field_map = {
             "age": "age",
             "occupation": "occupation",
-            "employment_type": "employment_type",
             "marital_status": "marital_status",
-            "health_conditions": "health_conditions",
         }
         for field, attr in field_map.items():
             if field in data:
@@ -106,10 +100,10 @@ class IncomeHandler(NodeHandler):
             data["income_streams_annual"] = {
                 e.income_type: float(e.annual_amount) for e in income_entries
             }
-        if profile and profile.primary_income_type:
-            data["primary_income_type"] = profile.primary_income_type
-        if profile and profile.is_stable is not None:
-            data["is_stable"] = profile.is_stable
+        if profile and profile.income_type:
+            data["income_type"] = profile.income_type
+        if profile and profile.is_pre_tax is not None:
+            data["is_pre_tax"] = profile.is_pre_tax
         return data or None
 
     def save(
@@ -122,20 +116,20 @@ class IncomeHandler(NodeHandler):
         record_history_cb: HistoryCallback,
     ) -> None:
         # Scalars
-        if "primary_income_type" in data:
-            old = profile.primary_income_type
-            new = data["primary_income_type"]
+        if "income_type" in data:
+            old = profile.income_type
+            new = data["income_type"]
             if old != new:
-                profile.primary_income_type = new
+                profile.income_type = new
                 if record_history:
-                    record_history_cb(db, user_id, "Income", "primary_income_type", old, new, False)
-        if "is_stable" in data:
-            old = profile.is_stable
-            new = data["is_stable"]
+                    record_history_cb(db, user_id, "Income", "income_type", old, new, False)
+        if "is_pre_tax" in data:
+            old = profile.is_pre_tax
+            new = data["is_pre_tax"]
             if old != new:
-                profile.is_stable = new
+                profile.is_pre_tax = new
                 if record_history:
-                    record_history_cb(db, user_id, "Income", "is_stable", old, new, False)
+                    record_history_cb(db, user_id, "Income", "is_pre_tax", old, new, False)
 
         # Portfolio
         if "income_streams_annual" in data:
@@ -232,13 +226,17 @@ class SavingsHandler(NodeHandler):
     def load(self, db: Session, user_id: int, profile: UserProfile | None) -> dict[str, Any] | None:
         if not profile:
             return None
-        if profile.total_savings is None and profile.emergency_fund_months is None:
+        if (profile.total_savings is None
+                and profile.emergency_fund_months is None
+                and profile.offset_balance is None):
             return None
         data: dict[str, Any] = {}
         if profile.total_savings is not None:
             data["total_savings"] = float(profile.total_savings)
         if profile.emergency_fund_months is not None:
             data["emergency_fund_months"] = profile.emergency_fund_months
+        if profile.offset_balance is not None:
+            data["offset_balance"] = float(profile.offset_balance)
         return data or None
 
     def save(
@@ -264,6 +262,13 @@ class SavingsHandler(NodeHandler):
                 profile.emergency_fund_months = new
                 if record_history:
                     record_history_cb(db, user_id, "Savings", "emergency_fund_months", old, new, False)
+        if "offset_balance" in data:
+            old = float(profile.offset_balance) if profile.offset_balance else None
+            new = data["offset_balance"]
+            if old != new:
+                profile.offset_balance = Decimal(str(new)) if new is not None else None
+                if record_history:
+                    record_history_cb(db, user_id, "Savings", "offset_balance", old, new, False)
 
 
 class AssetsHandler(NodeHandler):
@@ -273,13 +278,17 @@ class AssetsHandler(NodeHandler):
         asset_entries = db.execute(
             select(AssetEntry).where(AssetEntry.user_id == user_id)
         ).scalars().all()
-        if not asset_entries:
+        has_scalars = profile and profile.has_property is not None
+        if not asset_entries and not has_scalars:
             return None
-        return {
-            "asset_current_amount": {
+        data: dict[str, Any] = {}
+        if asset_entries:
+            data["asset_current_amount"] = {
                 e.asset_category: float(e.current_amount) for e in asset_entries
             }
-        }
+        if profile and profile.has_property is not None:
+            data["has_property"] = profile.has_property
+        return data or None
 
     def save(
         self,
@@ -290,6 +299,14 @@ class AssetsHandler(NodeHandler):
         record_history: bool,
         record_history_cb: HistoryCallback,
     ) -> None:
+        if "has_property" in data:
+            old = profile.has_property
+            new = data["has_property"]
+            if old != new:
+                profile.has_property = new
+                if record_history:
+                    record_history_cb(db, user_id, "Assets", "has_property", old, new, False)
+
         if "asset_current_amount" in data:
             assets = data["asset_current_amount"]
             for category, amount in assets.items():
@@ -339,6 +356,7 @@ class LoanHandler(NodeHandler):
                     "monthly_payment": float(e.monthly_payment) if e.monthly_payment else None,
                     "interest_rate": float(e.interest_rate) if e.interest_rate else None,
                     "remaining_term_months": e.remaining_term_months,
+                    "repayment_type": e.repayment_type,
                 }
                 for e in liability_entries
             }
@@ -374,7 +392,7 @@ class LoanHandler(NodeHandler):
                         )
                     ).scalar_one_or_none()
                     if existing:
-                        for field in ["outstanding_amount", "monthly_payment", "interest_rate", "remaining_term_months"]:
+                        for field in ["outstanding_amount", "monthly_payment", "interest_rate", "remaining_term_months", "repayment_type"]:
                             if field in details and details[field] is not None:
                                 old_val = getattr(existing, field)
                                 new_val = details[field]
@@ -386,8 +404,8 @@ class LoanHandler(NodeHandler):
                                         record_history_cb(
                                             db, user_id, "Loan",
                                             f"liabilities.{liability_type}.{field}",
-                                            float(old_val) if old_val else None,
-                                            float(new_val) if new_val else None,
+                                            float(old_val) if old_val and field != "repayment_type" else old_val,
+                                            float(new_val) if new_val and field != "repayment_type" else new_val,
                                             False
                                         )
                     else:
@@ -398,6 +416,7 @@ class LoanHandler(NodeHandler):
                             monthly_payment=Decimal(str(details.get("monthly_payment"))) if details.get("monthly_payment") else None,
                             interest_rate=Decimal(str(details.get("interest_rate"))) if details.get("interest_rate") else None,
                             remaining_term_months=details.get("remaining_term_months"),
+                            repayment_type=details.get("repayment_type"),
                         )
                         db.add(entry)
 
@@ -427,9 +446,6 @@ class InsuranceHandler(NodeHandler):
                     "coverage_amount": float(e.coverage_amount) if e.coverage_amount else None,
                     "premium_amount": float(e.premium_amount) if e.premium_amount else None,
                     "premium_frequency": e.premium_frequency,
-                    "waiting_period_weeks": e.waiting_period_weeks,
-                    "benefit_period_months": e.benefit_period_months,
-                    "excess_amount": float(e.excess_amount) if e.excess_amount else None,
                 }
                 for e in insurance_entries
             }
@@ -483,14 +499,13 @@ class InsuranceHandler(NodeHandler):
                     if existing:
                         update_fields = [
                             "covered_person", "held_through", "coverage_amount",
-                            "premium_amount", "premium_frequency", "waiting_period_weeks",
-                            "benefit_period_months", "excess_amount"
+                            "premium_amount", "premium_frequency"
                         ]
                         for field in update_fields:
                             if field in details and details[field] is not None:
                                 old_val = getattr(existing, field)
                                 new_val = details[field]
-                                if field in ["coverage_amount", "premium_amount", "excess_amount"]:
+                                if field in ["coverage_amount", "premium_amount"]:
                                     new_val = Decimal(str(new_val)) if new_val is not None else None
                                 if old_val != new_val:
                                     setattr(existing, field, new_val)
@@ -503,9 +518,6 @@ class InsuranceHandler(NodeHandler):
                             coverage_amount=Decimal(str(details.get("coverage_amount"))) if details.get("coverage_amount") else None,
                             premium_amount=Decimal(str(details.get("premium_amount"))) if details.get("premium_amount") else None,
                             premium_frequency=details.get("premium_frequency"),
-                            waiting_period_weeks=details.get("waiting_period_weeks"),
-                            benefit_period_months=details.get("benefit_period_months"),
-                            excess_amount=Decimal(str(details.get("excess_amount"))) if details.get("excess_amount") else None,
                         )
                         db.add(entry)
 
@@ -520,10 +532,10 @@ class MarriageHandler(NodeHandler):
         data: dict[str, Any] = {}
         if profile.spouse_age is not None:
             data["spouse_age"] = profile.spouse_age
-        if profile.spouse_employment_type:
-            data["spouse_employment_type"] = profile.spouse_employment_type
         if profile.spouse_income_annual is not None:
             data["spouse_income_annual"] = float(profile.spouse_income_annual)
+        if profile.finances_combined is not None:
+            data["finances_combined"] = profile.finances_combined
         return data or None
 
     def save(
@@ -537,8 +549,8 @@ class MarriageHandler(NodeHandler):
     ) -> None:
         field_map = {
             "spouse_age": ("spouse_age", None),
-            "spouse_employment_type": ("spouse_employment_type", None),
             "spouse_income_annual": ("spouse_income_annual", Decimal),
+            "finances_combined": ("finances_combined", None),
         }
         for field, (attr, converter) in field_map.items():
             if field in data:
@@ -553,7 +565,7 @@ class MarriageHandler(NodeHandler):
 
 
 class DependentsHandler(NodeHandler):
-    """Handler for Dependents node (children and parent support)."""
+    """Handler for Dependents node (children information)."""
     node_name = "Dependents"
 
     def load(self, db: Session, user_id: int, profile: UserProfile | None) -> dict[str, Any] | None:
@@ -570,10 +582,6 @@ class DependentsHandler(NodeHandler):
             data["child_pathway"] = profile.child_pathway
         if profile.education_funding_preference:
             data["education_funding_preference"] = profile.education_funding_preference
-        if profile.supporting_parents is not None:
-            data["supporting_parents"] = profile.supporting_parents
-        if profile.monthly_parent_support is not None:
-            data["monthly_parent_support"] = float(profile.monthly_parent_support)
         return data or None
 
     def save(
@@ -591,8 +599,6 @@ class DependentsHandler(NodeHandler):
             "annual_education_cost": ("annual_education_cost", Decimal),
             "child_pathway": ("child_pathway", None),
             "education_funding_preference": ("education_funding_preference", None),
-            "supporting_parents": ("supporting_parents", None),
-            "monthly_parent_support": ("monthly_parent_support", Decimal),
         }
         for field, (attr, converter) in field_map.items():
             if field in data:

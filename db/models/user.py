@@ -72,13 +72,14 @@ class UserProfile(Base):
     Portfolio/dict fields are stored in separate entry tables.
     
     Node coverage:
-    - Personal: age, occupation, employment_type, marital_status, health_conditions
-    - Income: primary_income_type, is_stable (portfolio in income_entries)
-    - Savings: total_savings, emergency_fund_months
+    - Personal: age, occupation, marital_status
+    - Income: income_type, is_pre_tax (portfolio in income_entries)
+    - Savings: total_savings, emergency_fund_months, offset_balance
     - Loan: has_debt (portfolio in liability_entries)
-    - Insurance: has_* flags (portfolio in insurance_entries)
-    - Marriage: spouse_age, spouse_employment_type, spouse_income_annual
-    - Dependents: number_of_children, children_ages, education fields, parent support
+    - Insurance: has_* flags, spouse_has_* flags (portfolio in insurance_entries)
+    - Marriage: spouse_age, spouse_income_annual, finances_combined
+    - Dependents: number_of_children, children_ages, education fields
+    - Assets: has_property (portfolio in asset_entries)
     - Retirement: super balance, contributions, retirement targets
     """
     __tablename__ = "user_profiles"
@@ -90,21 +91,20 @@ class UserProfile(Base):
     # =========================================================================
     age = Column(Integer, nullable=True)
     occupation = Column(String(255), nullable=True)
-    employment_type = Column(String(50), nullable=True)  # full_time, part_time, etc.
     marital_status = Column(String(20), nullable=True)  # single, married, etc.
-    health_conditions = Column(ARRAY(Text), nullable=True)
     
     # =========================================================================
     # Income node scalar fields (portfolio in income_entries table)
     # =========================================================================
-    primary_income_type = Column(String(50), nullable=True)
-    is_stable = Column(Boolean, nullable=True)
+    income_type = Column(String(50), nullable=True)  # salary, business_income, rental_income, etc.
+    is_pre_tax = Column(Boolean, nullable=True)  # whether reported income is pre-tax or post-tax
     
     # =========================================================================
     # Savings node fields
     # =========================================================================
     total_savings = Column(Numeric(15, 2), nullable=True)
     emergency_fund_months = Column(Integer, nullable=True)
+    offset_balance = Column(Numeric(15, 2), nullable=True)  # AU-specific offset account
     
     # =========================================================================
     # Loan node scalar fields (portfolio in liability_entries table)
@@ -122,11 +122,16 @@ class UserProfile(Base):
     spouse_has_income_protection = Column(Boolean, nullable=True)
     
     # =========================================================================
+    # Assets node scalar fields (portfolio in asset_entries table)
+    # =========================================================================
+    has_property = Column(Boolean, nullable=True)  # determines how housing cost questions are asked
+    
+    # =========================================================================
     # Marriage node fields (spouse financial details)
     # =========================================================================
     spouse_age = Column(Integer, nullable=True)
-    spouse_employment_type = Column(String(50), nullable=True)
     spouse_income_annual = Column(Numeric(15, 2), nullable=True)
+    finances_combined = Column(Boolean, nullable=True)  # are finances combined with partner?
     
     # =========================================================================
     # Dependents node fields
@@ -136,8 +141,6 @@ class UserProfile(Base):
     annual_education_cost = Column(Numeric(15, 2), nullable=True)
     child_pathway = Column(String(50), nullable=True)  # school, uni, apprenticeship, etc.
     education_funding_preference = Column(String(50), nullable=True)  # hecs_help, parent_funded, etc.
-    supporting_parents = Column(Boolean, nullable=True)
-    monthly_parent_support = Column(Numeric(15, 2), nullable=True)
     
     # =========================================================================
     # Retirement node fields
@@ -162,4 +165,3 @@ class UserProfile(Base):
 
     def __repr__(self):
         return f"<UserProfile(user_id={self.user_id}, age={self.age})>"
-

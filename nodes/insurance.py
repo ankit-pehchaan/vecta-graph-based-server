@@ -78,22 +78,6 @@ class InsuranceCoverage(BaseModel):
         description="Premium frequency: weekly/fortnightly/monthly/annual",
         json_schema_extra={"collect": True},
     )
-    waiting_period_weeks: int | None = Field(
-        default=None,
-        description="Income protection waiting period (weeks)",
-        json_schema_extra={"collect": True, "applies_to": ["income_protection"]},
-    )
-    benefit_period_months: int | None = Field(
-        default=None,
-        description="Income protection benefit period (months)",
-        json_schema_extra={"collect": True, "applies_to": ["income_protection"]},
-    )
-    excess_amount: float | None = Field(
-        default=None,
-        description="Excess amount (where applicable, e.g., health/home/car)",
-        json_schema_extra={"collect": True, "applies_to": ["private_health", "home", "contents", "car"]},
-    )
-
     model_config = {"extra": "allow"}
 
 
@@ -107,9 +91,6 @@ class Insurance(BaseNode):
     Portfolio structure:
     - coverages: dict keyed by InsuranceType enum value
     - Each entry contains: covered_person, held_through, coverage_amount, premium_amount, premium_frequency
-    - Conditional fields:
-      - income_protection: waiting_period_weeks, benefit_period_months
-      - private_health/home/car: excess_amount
     
     Example:
     {
@@ -123,10 +104,8 @@ class Insurance(BaseNode):
         "private_health": {
             "covered_person": "family",
             "held_through": "personal",
-            "coverage_amount": null,
             "premium_amount": 3600,
-            "premium_frequency": "annual",
-            "excess_amount": 500
+            "premium_frequency": "annual"
         }
     }
     """
@@ -138,7 +117,7 @@ class Insurance(BaseNode):
     # Value: dict with coverage details
     coverages: dict[str, InsuranceCoverage] = Field(
         default_factory=dict,
-        description="Insurance coverages by type. Key is InsuranceType value. Value contains held_through/covered_person plus optional details like coverage_amount, premiums, excess, waiting/benefit periods."
+        description="Insurance coverages by type. Key is InsuranceType value. Value contains held_through/covered_person plus optional details like coverage_amount and premiums."
     )
     
     # Quick-check fields for common coverage types (helps goal deduction)

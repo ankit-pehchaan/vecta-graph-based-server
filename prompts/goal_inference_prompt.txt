@@ -137,11 +137,10 @@ starting_family:
   - Young married couple with no children yet
 
 aged_care:
-  DEDUCE THIS when parent support is relevant:
-  - Dependents.supporting_parents = true
+  DEDUCE THIS when parent care is relevant:
   - User mentions elderly parents, nursing home, aged care
   - Parent ages suggest care needs approaching
-  - Monthly parent support already being provided
+  - User mentions financial support for parents
 
 --- INSURANCE / PROTECTION ---
 life_insurance:
@@ -199,7 +198,7 @@ major_purchase:
 business_start:
   - User mentions starting a business, side hustle becoming full-time
   - Saving for business capital, franchise, equipment
-  - Personal.employment_type = self_employed AND growth intentions
+  - User's occupation suggests self-employment AND growth intentions
 
 wealth_creation:
   DEDUCE THIS when the numbers show opportunity or gap:
