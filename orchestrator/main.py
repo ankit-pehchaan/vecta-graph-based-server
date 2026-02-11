@@ -1,5 +1,4 @@
-"""
-Orchestrator - Main controller for the Vecta financial education platform.
+"""Backward-compatible entrypoint for Orchestrator.
 
 Agent architecture:
 1. StateResolverAgent - Extract facts from user input
@@ -71,12 +70,14 @@ class Orchestrator:
         initial_context: str | None = None,
         model_id: str | None = None,
         session_id: str | None = None,
+        user_id: int | None = None,
     ):
         """Initialize orchestrator with agents and memory."""
         self.initial_context = initial_context
         self.user_goal = initial_context  # Alias for API compatibility
         self.model_id = model_id
         self.session_id = session_id
+        self.user_id = user_id
         
         # Core memory
         self.graph_memory = GraphMemory()

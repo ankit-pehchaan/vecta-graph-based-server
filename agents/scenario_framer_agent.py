@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
+from agno.db.postgres import PostgresDb
 from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,10 @@ class ScenarioFramerResponse(BaseModel):
         default=None,
         description="True if user has declined or dismissed the goal"
     )
+    goal_deferred: bool | None = Field(
+        default=None,
+        description="True if user wants to think about it later"
+    )
     
     # Flow control
     should_continue: bool | None = Field(
@@ -67,6 +71,10 @@ class ScenarioFramerResponse(BaseModel):
     reasoning: str | None = Field(
         default=None,
         description="Agent's reasoning about user's emotional state and next step"
+    )
+    defer_reason: str | None = Field(
+        default=None,
+        description="Short reason when user defers the goal"
     )
 
 
@@ -89,7 +97,7 @@ class ScenarioFramerAgent:
         self.session_id = session_id
         self._agent: Agent | None = None
         self._prompt_template: str | None = None
-        self._db: SqliteDb | None = None
+        self._db: PostgresDb | None = None
     
     def _load_prompt(self) -> str:
         """Load prompt template from file."""
@@ -98,10 +106,10 @@ class ScenarioFramerAgent:
             self._prompt_template = prompt_path.read_text()
         return self._prompt_template
     
-    def _get_db(self) -> SqliteDb:
+    def _get_db(self) -> PostgresDb:
         """Get or create database connection for scenario framing history."""
         if self._db is None:
-            self._db = SqliteDb(db_file=Config.get_db_path("scenario_framer_agent.db"))
+            self._db = PostgresDb(db_url=Config.DATABASE_URL)
         return self._db
     
     def _ensure_agent(self, instructions: str) -> Agent:
@@ -137,13 +145,13 @@ class ScenarioFramerAgent:
         if personal:
             age = personal.get("age")
             marital = personal.get("marital_status")
-            employment = personal.get("employment_type")
+            occupation = personal.get("occupation")
             if age:
                 summary_parts.append(f"Age: {age}")
             if marital:
                 summary_parts.append(f"Relationship: {marital}")
-            if employment:
-                summary_parts.append(f"Employment: {employment}")
+            if occupation:
+                summary_parts.append(f"Occupation: {occupation}")
         
         # Income
         income = graph_snapshot.get("Income", {})

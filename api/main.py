@@ -2,7 +2,6 @@
 FastAPI application for Financial Life Graph.
 """
 
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
@@ -10,10 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.auth import router as auth_router
 from auth.dependencies import get_current_user
-from api.schemas import SummaryResponse, FieldHistoryResponse
+from api.schemas import SummaryResponse, FieldHistoryResponse, ProfileResponse, GoalResponse
 from api.sessions import session_manager
 from api.websocket import websocket_handler
 from config import Config
+from db.repos import UserRepository
 
 # Validate configuration on startup
 Config.validate()
@@ -22,7 +22,6 @@ Config.validate()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown."""
-    os.makedirs(Config.DB_DIR, exist_ok=True)
     yield
 
 
@@ -98,6 +97,70 @@ async def get_field_history(session_id: str, _: dict = Depends(get_current_user)
     return FieldHistoryResponse(
         field_history=field_history,
         conflicts=orchestrator.graph_memory.conflicts,
+    )
+
+
+@app.get("/api/v1/profile")
+async def get_profile(user: dict = Depends(get_current_user)) -> ProfileResponse:
+    """
+    Get user's financial profile data.
+    
+    Returns all collected node data and goals for the authenticated user.
+    Used by frontend for session resume and data sync.
+    """
+    user_id = user.get("id")
+    if not user_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="User ID not found")
+    
+    user_repo = UserRepository()
+    
+    # Load node data
+    node_data = user_repo.load_user_graph_data(user_id)
+    
+    # Load goals
+    goal_state = user_repo.load_user_goals(user_id)
+    
+    return ProfileResponse(
+        user_id=user_id,
+        node_data=node_data,
+        qualified_goals=[
+            {"goal_id": gid, **data}
+            for gid, data in goal_state.get("qualified_goals", {}).items()
+        ],
+        possible_goals=[
+            {"goal_id": gid, **data}
+            for gid, data in goal_state.get("possible_goals", {}).items()
+        ],
+        rejected_goals=goal_state.get("rejected_goals", []),
+    )
+
+
+@app.get("/api/v1/goals")
+async def get_goals(user: dict = Depends(get_current_user)) -> GoalResponse:
+    """
+    Get user's financial goals.
+    
+    Returns qualified, possible, and rejected goals.
+    """
+    user_id = user.get("id")
+    if not user_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="User ID not found")
+    
+    user_repo = UserRepository()
+    goal_state = user_repo.load_user_goals(user_id)
+    
+    return GoalResponse(
+        qualified_goals=[
+            {"goal_id": gid, **data}
+            for gid, data in goal_state.get("qualified_goals", {}).items()
+        ],
+        possible_goals=[
+            {"goal_id": gid, **data}
+            for gid, data in goal_state.get("possible_goals", {}).items()
+        ],
+        rejected_goals=goal_state.get("rejected_goals", []),
     )
 
 

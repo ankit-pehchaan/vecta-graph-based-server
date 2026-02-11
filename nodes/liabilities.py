@@ -50,6 +50,11 @@ class LiabilityDetails(BaseModel):
         description="Remaining term in months, if known",
         json_schema_extra={"collect": True},
     )
+    repayment_type: str | None = Field(
+        default=None,
+        description="Repayment type: 'pi' (Principal & Interest) or 'interest_only'",
+        json_schema_extra={"collect": True},
+    )
 
     model_config = {"extra": "allow"}
 

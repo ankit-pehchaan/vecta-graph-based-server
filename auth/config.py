@@ -5,6 +5,20 @@ from __future__ import annotations
 import os
 import secrets
 from dataclasses import dataclass
+from pathlib import Path
+
+# Load .env file before reading config
+try:
+    from dotenv import load_dotenv
+    
+    # Try loading from project root
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=True)
+    else:
+        load_dotenv(override=True)
+except ImportError:
+    pass
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -55,6 +69,7 @@ class AuthConfig:
     GOOGLE_REDIRECT_URI: str | None = os.getenv("GOOGLE_REDIRECT_URI")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
-    AUTH_STORE: str = os.getenv("AUTH_STORE", "memory")
-    AUTH_DB_FILE: str = os.getenv("AUTH_DB_FILE", "auth.db")
+    # Auth store: "postgres" (production) or "memory" (testing)
+    AUTH_STORE: str = os.getenv("AUTH_STORE", "postgres")
+    AUTH_DB_FILE: str = os.getenv("AUTH_DB_FILE", "auth.db")  # Legacy, unused with postgres
 

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
+from agno.db.postgres import PostgresDb
 from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, Field
 
@@ -185,7 +185,7 @@ class ConversationAgent:
     - Reasons about user intent, goals, and information gaps
     - Generates natural, persona-consistent responses
     - Determines when we have enough information
-    - Uses SqliteDb for persistent memory across sessions
+    - Uses PostgresDb for persistent memory across sessions
     """
     
     def __init__(self, model_id: str | None = None, session_id: str | None = None):
@@ -194,7 +194,7 @@ class ConversationAgent:
         self.session_id = session_id
         self._agent: Agent | None = None
         self._prompt_template: str | None = None
-        self._db: SqliteDb | None = None
+        self._db: PostgresDb | None = None
     
     def _load_prompt(self) -> str:
         """Load prompt template from file."""
@@ -203,10 +203,10 @@ class ConversationAgent:
             self._prompt_template = prompt_path.read_text()
         return self._prompt_template
     
-    def _get_db(self) -> SqliteDb:
+    def _get_db(self) -> PostgresDb:
         """Get or create database connection for persistent memory."""
         if self._db is None:
-            self._db = SqliteDb(db_file=Config.get_db_path("conversation_agent.db"))
+            self._db = PostgresDb(db_url=Config.DATABASE_URL)
         return self._db
     
     def _ensure_agent(self, instructions: str) -> Agent:

@@ -3,7 +3,7 @@ agno
 pydantic            
 # Auth
 python-jose[cryptography]
-passlib[bcrypt]
+bcrypt
 email-validator
 # API Server
 fastapi
@@ -15,9 +15,13 @@ httpx
 python-dotenv
 # OpenAI (used by agno.models.openai)
 openai
+# Database
 sqlalchemy
+psycopg2-binary
+alembic
 # Vector DB for Australian context Knowledge Base
 lancedb
 tantivy
+# Testing
 pytest
 pytest-asyncio

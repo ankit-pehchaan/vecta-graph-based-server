@@ -115,8 +115,30 @@ class StateResolverAgent:
         
         # Run agent
         response = self._agent.run("Analyze the user message and extract all facts.").content
-        
-        return response
+
+        if isinstance(response, StateResolverResponse):
+            return response
+
+        if isinstance(response, str):
+            try:
+                data = json.loads(response)
+                return StateResolverResponse(**data)
+            except Exception:
+                return StateResolverResponse(
+                    updates=[],
+                    answer_consumed_for_current_node=None,
+                    priority_shift=[],
+                    conflicts_detected=False,
+                    reasoning="Invalid StateResolver response (string)",
+                )
+
+        return StateResolverResponse(
+            updates=[],
+            answer_consumed_for_current_node=None,
+            priority_shift=[],
+            conflicts_detected=False,
+            reasoning="Invalid StateResolver response type",
+        )
     
     async def aresolve_state(
         self,

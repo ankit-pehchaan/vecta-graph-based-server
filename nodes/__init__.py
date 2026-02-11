@@ -20,13 +20,13 @@ Production-grade for Australian personal finance:
 from nodes.base import BaseGraph, BaseNode, Edge
 
 # Personal information
-from nodes.personal import EmploymentType, MaritalStatus, Personal
+from nodes.personal import MaritalStatus, Personal
 
-# Family nodes (Marriage = spouse financial details, Dependents = children/parents)
+# Family nodes (Marriage = spouse financial details, Dependents = children)
 from nodes.family import Dependents, Marriage
 
 # Financial nodes (Income supports multi-stream, Expenses by category)
-from nodes.financial import Expenses, Income, IncomeType, Savings, TaxCategory
+from nodes.financial import Expenses, Income, IncomeType, Savings
 
 # Asset nodes (portfolio-style, multi-category)
 from nodes.assets import AssetCategory, Assets
@@ -57,7 +57,6 @@ __all__ = [
     "BaseGraph",
     # Personal
     "Personal",
-    "EmploymentType",
     "MaritalStatus",
     # Family
     "Marriage",
@@ -65,7 +64,6 @@ __all__ = [
     # Financial (Income, Expenses, Savings)
     "Income",
     "IncomeType",
-    "TaxCategory",
     "Expenses",
     "Savings",
     # Assets

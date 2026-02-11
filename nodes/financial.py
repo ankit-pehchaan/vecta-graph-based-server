@@ -29,23 +29,13 @@ class IncomeType(str, Enum):
     OTHER = "other"
 
 
-class TaxCategory(str, Enum):
-    """Tax category enumeration for Australian tax system."""
-    ORDINARY_INCOME = "ordinary_income"
-    CAPITAL_GAINS_DISCOUNT = "capital_gains_discount"
-    FRANKED_DIVIDENDS = "franked_dividends"
-    UNFRANKED_DIVIDENDS = "unfranked_dividends"
-    SUPER_CONCESSIONAL = "super_concessional"
-    SUPER_NON_CONCESSIONAL = "super_non_concessional"
-    TAX_FREE = "tax_free"
-
-
 class Income(BaseNode):
     """
-    Income portfolio node for Australian market.
+    Income node for Australian market.
     
     Supports multiple income streams (salary + rental + dividends, etc.).
-    Total is derived from streams - never ask for total directly.
+    Agent asks directly: "What's your income?", "Is that from salary/business/etc?",
+    "Is that pre or post tax?"
     
     Example income_streams_annual:
     {
@@ -65,15 +55,14 @@ class Income(BaseNode):
         description="Annual income by source type. Key is IncomeType value (salary, rental_income, dividend_income, etc.), value is annual amount"
     )
     
-    # Primary income identification (for stability assessment)
-    primary_income_type: IncomeType | None = Field(default=None, description="Primary/main source of income")
+    # Income source type (salary, business, rental, etc.)
+    income_type: IncomeType | None = Field(default=None, description="Primary/main source of income (salary, business_income, rental_income, etc.)")
     
-    # Stability indicator (applies to primary income)
-    is_stable: bool | None = Field(default=None, description="Is primary income stable? (true for salary/wages, false for business/variable)")
+    # Whether the reported income figure is pre-tax or post-tax
+    is_pre_tax: bool | None = Field(default=None, description="Is the reported income figure pre-tax (true) or post-tax (false)?")
     
-    # DERIVED: Total annual income (computed from streams, not asked)
-    # Note: This is computed, agents should never ask for it directly
-    total_annual_income: float | None = Field(default=None, description="Total annual income - DERIVED from income_streams_annual, do not ask")
+    # Total annual income
+    total_annual_income: float | None = Field(default=None, description="Total annual income across all streams")
     
     def compute_total(self) -> float:
         """Compute total annual income from all streams."""
@@ -127,14 +116,16 @@ class Expenses(BaseNode):
 
 class Savings(BaseNode):
     """
-    Savings node containing liquid savings and emergency fund status.
+    Savings node containing liquid savings, emergency fund status,
+    and offset account balance.
     """
     
     node_type: str = Field(default="savings", frozen=True)
     total_savings: float | None = Field(default=None, description="Total liquid savings (bank accounts, cash, emergency fund combined)")
     emergency_fund_months: int | None = Field(default=None, description="Emergency fund coverage in months of expenses (e.g., 3-6 months recommended)")
+    offset_balance: float | None = Field(default=None, description="Offset account balance (AU-specific product tied to home loans)")
 
     @classmethod
     def collection_spec(cls) -> CollectionSpec | None:
-        # User can answer via total_savings, emergency_fund_months, or both.
-        return CollectionSpec(require_any_of=["total_savings", "emergency_fund_months"])
+        # User can answer via total_savings, emergency_fund_months, offset_balance, or any combination.
+        return CollectionSpec(require_any_of=["total_savings", "emergency_fund_months", "offset_balance"])

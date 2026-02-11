@@ -52,6 +52,8 @@ class GraphMemory(BaseModel):
     qualified_goals: dict[str, dict[str, Any]] = Field(default_factory=dict)
     rejected_goals: set[str] = Field(default_factory=set)
     rejected_goal_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    deferred_goals: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    deferred_goal_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
     
     # Goal exploration results: goal_id -> GoalUnderstanding dict
     # Stores the structured output of Socratic goal exploration
@@ -284,6 +286,10 @@ class GraphMemory(BaseModel):
         # Skip if already qualified
         if goal_id in self.qualified_goals:
             return
+
+        # Skip if goal is deferred for later review
+        if goal_id in self.deferred_goals:
+            return
         
         # Skip if same description already exists in qualified_goals (deduplication by description)
         new_desc = (goal_data.get("description") or "").lower().strip()
@@ -330,6 +336,7 @@ class GraphMemory(BaseModel):
             return
         self.rejected_goals.discard(goal_id)
         self.possible_goals.pop(goal_id, None)
+        self.deferred_goals.pop(goal_id, None)
         self.qualified_goals[goal_id] = goal_data
 
     def reject_goal(self, goal_id: str) -> None:
@@ -339,13 +346,34 @@ class GraphMemory(BaseModel):
             return
         self.qualified_goals.pop(goal_id, None)
         previous = self.possible_goals.pop(goal_id, None) or {}
+        deferred = self.deferred_goals.pop(goal_id, None) or {}
         self.rejected_goals.add(goal_id)
         # Persist rejection details so the system can reopen the goal later if evidence changes
         self.rejected_goal_details[goal_id] = {
             "rejected_at": datetime.now().isoformat(),
-            "confidence": previous.get("confidence"),
-            "deduced_from": previous.get("deduced_from"),
-            "description": previous.get("description"),
+            "confidence": previous.get("confidence") or deferred.get("confidence"),
+            "deduced_from": previous.get("deduced_from") or deferred.get("deduced_from"),
+            "description": previous.get("description") or deferred.get("description"),
+        }
+
+    def defer_goal(self, goal_id: str, goal_data: dict[str, Any], reason: str | None = None) -> None:
+        """Mark goal as deferred for later review."""
+        # Skip invalid goal_id
+        if not goal_id:
+            return
+        self.qualified_goals.pop(goal_id, None)
+        previous = self.possible_goals.pop(goal_id, None) or {}
+        self.rejected_goals.discard(goal_id)
+        self.deferred_goals[goal_id] = {
+            **previous,
+            **(goal_data or {}),
+        }
+        self.deferred_goal_details[goal_id] = {
+            "deferred_at": datetime.now().isoformat(),
+            "reason": reason,
+            "confidence": (goal_data or {}).get("confidence") or previous.get("confidence"),
+            "deduced_from": (goal_data or {}).get("deduced_from") or previous.get("deduced_from"),
+            "description": (goal_data or {}).get("description") or previous.get("description"),
         }
     
     # Goal understanding methods (Socratic exploration results)
@@ -441,6 +469,8 @@ class GraphMemory(BaseModel):
             "rejected_goals": list(self.rejected_goals),
             "rejected_goal_details": self.rejected_goal_details,
             "goal_understandings": self.goal_understandings,
+            "deferred_goals": self.deferred_goals,
+            "deferred_goal_details": self.deferred_goal_details,
             "asked_questions": self.get_asked_questions_dict(),
         }
     
@@ -482,6 +512,8 @@ class GraphMemory(BaseModel):
             rejected_goals=set(data.get("rejected_goals", [])),
             rejected_goal_details=data.get("rejected_goal_details", {}),
             goal_understandings=data.get("goal_understandings", {}),
+            deferred_goals=data.get("deferred_goals", {}),
+            deferred_goal_details=data.get("deferred_goal_details", {}),
             asked_questions=asked_questions,
         )
 

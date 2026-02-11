@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
+from agno.db.postgres import PostgresDb
 from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, Field
 
@@ -53,7 +53,7 @@ class GoalInferenceAgent:
         self.session_id = session_id
         self._agent: Agent | None = None
         self._prompt_template: str | None = None
-        self._db: SqliteDb | None = None
+        self._db: PostgresDb | None = None
 
     def _load_prompt(self) -> str:
         if self._prompt_template is None:
@@ -61,9 +61,9 @@ class GoalInferenceAgent:
             self._prompt_template = prompt_path.read_text()
         return self._prompt_template
 
-    def _get_db(self) -> SqliteDb:
+    def _get_db(self) -> PostgresDb:
         if self._db is None:
-            self._db = SqliteDb(db_file=Config.get_db_path("goal_inference_agent.db"))
+            self._db = PostgresDb(db_url=Config.DATABASE_URL)
         return self._db
 
     def _ensure_agent(self, instructions: str) -> Agent:
