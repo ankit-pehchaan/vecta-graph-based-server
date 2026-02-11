@@ -1,0 +1,61 @@
+AUSTRALIAN CENTRELINK / GOVERNMENT BENEFITS - KEY FACTS
+
+Family Tax Benefit (FTB):
+- Part A: per child payment, income-tested
+  Base rate + supplement for each child under 20 (or 16-19 in full-time study)
+  Income test: reduces after $58,108 family income
+- Part B: per family payment for single-income or low-income families
+  Paid per family (not per child)
+  Primary earner income test: $100,900 threshold
+  Secondary earner: up to $6,059 before reduction
+
+Parenting Payment:
+- Single: up to $922.10 per fortnight (income-tested)
+  Youngest child under 14
+- Partnered: up to $631.80 per fortnight (income-tested)
+  Youngest child under 6
+
+Child Care Subsidy (CCS):
+- Up to 90% of child care fees (income-tested)
+- Family income under $80,000: 90% subsidy
+- Reduces by 1% for every $5,000 over $80,000
+- Activity test: hours of recognised activity per fortnight
+- Annual cap removed for families earning under $530,000
+
+JobSeeker Payment:
+- Single, no children: ~$762.70 per fortnight
+- Single, with children: ~$816.90 per fortnight
+- Partnered: ~$693.10 per fortnight
+- Income test: $150 per fortnight before reduction
+- Assets test applies
+- Mutual obligation requirements (job search, activities)
+
+Carer Payment:
+- For people providing constant care to someone with disability/illness
+- Rate: equivalent to Age Pension (~$1,116.30 per fortnight single)
+- Income and assets tested
+- Carer Allowance: additional supplement (~$144.80 per fortnight)
+
+Disability Support Pension (DSP):
+- For people with permanent disability who cannot work 15+ hours per week
+- Rate: equivalent to Age Pension
+- Income and assets tested
+- Impairment tables assessment required
+
+Commonwealth Rent Assistance:
+- Additional payment for those receiving eligible Centrelink payments
+- Minimum rent threshold before assistance starts
+- Maximum rate: ~$188.20 per fortnight (single, no children)
+- Paid on top of primary Centrelink payment
+
+Paid Parental Leave:
+- Government-funded: 20 weeks at national minimum wage (~$882.75/week)
+- Increasing to 26 weeks by July 2026
+- Income test: $168,865 individual income in previous financial year
+- Can be shared between eligible parents
+- Employer-funded parental leave is separate and additional
+
+Bereavement Payments:
+- Lump sum and ongoing payments available after death of partner
+- Varies by payment type
+- Transition period for pension rate adjustments

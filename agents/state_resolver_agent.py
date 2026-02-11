@@ -118,6 +118,39 @@ class StateResolverAgent:
         
         return response
     
+    async def aresolve_state(
+        self,
+        user_reply: str,
+        current_node: str,
+        current_question: str | None,
+        graph_memory: GraphMemory,
+        all_node_schemas: dict[str, dict[str, Any]],
+    ) -> StateResolverResponse:
+        """Async version of resolve_state using agent.arun()."""
+        prompt_template = self._load_prompt()
+        schemas_formatted = json.dumps(all_node_schemas, indent=2)
+        graph_snapshot = json.dumps(graph_memory.get_all_nodes_data(), indent=2)
+        prompt = prompt_template.format(
+            current_node=current_node,
+            current_question=current_question or "No question asked yet",
+            all_node_schemas=schemas_formatted,
+            graph_snapshot=graph_snapshot,
+            user_reply=user_reply,
+        )
+        if not self._agent:
+            self._agent = Agent(
+                model=OpenAIChat(id=self.model_id),
+                instructions=prompt,
+                output_schema=StateResolverResponse,
+                markdown=False,
+                debug_mode=False,
+                use_json_mode=True,
+            )
+        else:
+            self._agent.instructions = prompt
+        response = await self._agent.arun("Analyze the user message and extract all facts.")
+        return response.content
+
     def cleanup(self) -> None:
         """Clean up agent resources."""
         self._agent = None

@@ -6,6 +6,7 @@ This agent combines the functionality of:
 - GoalAgent (goal detection, deduction, qualification)
 - DecisionAgent (determining what info is needed)
 - QuestionPlannerAgent (generating natural questions)
+- GoalDetailsParserAgent (goal details after fact-find)
 
 It receives FULL context and REASONS about everything:
 - What the user is communicating
@@ -17,7 +18,7 @@ It receives FULL context and REASONS about everything:
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
@@ -25,6 +26,7 @@ from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, Field
 
 from config import Config
+from utils.json_stream import ResponseTextExtractor
 
 
 class GoalCandidate(BaseModel):
@@ -156,6 +158,16 @@ class ConversationResponse(BaseModel):
         default=None,
         description="Goals inferred from data relationships (for scenario framing)"
     )
+
+    # Goal Details (collected after all nodes visited)
+    goal_details_extracted: dict[str, Any] | None = Field(
+        default=None,
+        description="Extracted goal details: target_amount, target_year, timeline_years, target_months"
+    )
+    goal_details_done: bool | None = Field(
+        default=None,
+        description="True when all details are collected for the current goal"
+    )
     
     # For debugging/logging
     reasoning: str | None = Field(
@@ -212,6 +224,12 @@ class ConversationAgent:
                 # Session summaries for long-term context preservation
                 enable_session_summaries=True,    # Condenses older messages into summaries
                 add_session_summary_to_context=True,  # Adds summary to agent context
+                # Session state for persistent structured data across turns
+                session_state={
+                    "goal_exploration_results": {},
+                    "conversation_phase": "goal_intake",
+                },
+                add_session_state_to_context=True,
                 markdown=False,
                 debug_mode=False,
                 use_json_mode=True,
@@ -219,6 +237,14 @@ class ConversationAgent:
         else:
             self._agent.instructions = instructions
         return self._agent
+
+    def update_session_state(self, exploration_results: dict | None = None, phase: str | None = None) -> None:
+        """Update the agent's session state (called by orchestrator after exploration)."""
+        if self._agent and self._agent.session_state is not None:
+            if exploration_results is not None:
+                self._agent.session_state["goal_exploration_results"] = exploration_results
+            if phase is not None:
+                self._agent.session_state["conversation_phase"] = phase
     
     def _format_goal_state(
         self,
@@ -265,6 +291,10 @@ class ConversationAgent:
         current_node_being_collected: str | None = None,
         current_node_missing_fields: list[str] | None = None,
         asked_questions: dict[str, list[str]] | None = None,
+        goal_exploration_summary: str | None = None,
+        goal_details_mode: bool = False,
+        goal_details_goal_id: str | None = None,
+        goal_details_missing_fields: list[str] | None = None,
     ) -> ConversationResponse:
         """
         Process user message with full context.
@@ -288,6 +318,7 @@ class ConversationAgent:
             field_history: History of field changes (optional)
             last_question: The question we just asked (if any)
             last_question_node: Which node the last question targeted
+            goal_exploration_summary: Emotional context from Socratic exploration
         """
         prompt_template = self._load_prompt()
         
@@ -324,6 +355,10 @@ class ConversationAgent:
             last_question_node=last_question_node or "None",
             current_node_missing_fields=", ".join(current_node_missing_fields) if current_node_missing_fields else "None",
             asked_questions=asked_questions_formatted,
+            goal_exploration_summary=goal_exploration_summary or "No goals explored yet.",
+            goal_details_mode="true" if goal_details_mode else "false",
+            goal_details_goal_id=goal_details_goal_id or "None",
+            goal_details_missing_fields=", ".join(goal_details_missing_fields) if goal_details_missing_fields else "None",
         )
         
         agent = self._ensure_agent(prompt)
@@ -337,7 +372,186 @@ class ConversationAgent:
         
         return response
     
+    async def aprocess(
+        self,
+        user_message: str,
+        graph_snapshot: dict[str, Any],
+        qualified_goals: dict[str, Any],
+        possible_goals: dict[str, Any],
+        rejected_goals: list[str],
+        visited_nodes: list[str],
+        omitted_nodes: list[str],
+        pending_nodes: list[str],
+        all_node_schemas: dict[str, Any],
+        field_history: dict[str, Any] | None = None,
+        last_question: str | None = None,
+        last_question_node: str | None = None,
+        goal_intake_complete: bool | None = None,
+        current_node_being_collected: str | None = None,
+        current_node_missing_fields: list[str] | None = None,
+        asked_questions: dict[str, list[str]] | None = None,
+        goal_exploration_summary: str | None = None,
+        goal_details_mode: bool = False,
+        goal_details_goal_id: str | None = None,
+        goal_details_missing_fields: list[str] | None = None,
+    ) -> ConversationResponse:
+        """Async version of process (non-streaming, parsed output)."""
+        prompt_template = self._load_prompt()
+        goal_state = self._format_goal_state(qualified_goals, possible_goals, rejected_goals)
+        data_summary = self._summarize_graph_data(graph_snapshot)
+        asked_questions_formatted = "None"
+        if asked_questions:
+            parts = []
+            for node, fields in asked_questions.items():
+                if fields:
+                    parts.append(f"{node}: [{', '.join(fields)}]")
+            asked_questions_formatted = "; ".join(parts) if parts else "None"
+        prompt = prompt_template.format(
+            user_message=user_message,
+            current_node_being_collected=current_node_being_collected or "None",
+            goal_intake_complete="true" if goal_intake_complete else "false",
+            graph_snapshot=json.dumps(graph_snapshot, indent=2),
+            data_summary=data_summary,
+            goal_state=json.dumps(goal_state, indent=2),
+            qualified_goals_list=", ".join(qualified_goals.keys()) if qualified_goals else "None",
+            possible_goals_list=", ".join(possible_goals.keys()) if possible_goals else "None",
+            rejected_goals_list=", ".join(rejected_goals) if rejected_goals else "None",
+            visited_nodes=", ".join(visited_nodes) if visited_nodes else "None",
+            omitted_nodes=", ".join(omitted_nodes) if omitted_nodes else "None",
+            pending_nodes=", ".join(pending_nodes) if pending_nodes else "None",
+            all_node_schemas=json.dumps(all_node_schemas, indent=2),
+            last_question=last_question or "None",
+            last_question_node=last_question_node or "None",
+            current_node_missing_fields=", ".join(current_node_missing_fields) if current_node_missing_fields else "None",
+            asked_questions=asked_questions_formatted,
+            goal_exploration_summary=goal_exploration_summary or "No goals explored yet.",
+            goal_details_mode="true" if goal_details_mode else "false",
+            goal_details_goal_id=goal_details_goal_id or "None",
+            goal_details_missing_fields=", ".join(goal_details_missing_fields) if goal_details_missing_fields else "None",
+        )
+        agent = self._ensure_agent(prompt)
+        response = await agent.arun(
+            "Analyze the user's message in full context. "
+            "Determine intent, detect goals, identify information gaps, and generate an appropriate response. "
+            "Remember: You are Vecta - warm but direct, person-first, one question at a time."
+        )
+        return response.content
+
+    async def aprocess_stream(
+        self,
+        user_message: str,
+        graph_snapshot: dict[str, Any],
+        qualified_goals: dict[str, Any],
+        possible_goals: dict[str, Any],
+        rejected_goals: list[str],
+        visited_nodes: list[str],
+        omitted_nodes: list[str],
+        pending_nodes: list[str],
+        all_node_schemas: dict[str, Any],
+        field_history: dict[str, Any] | None = None,
+        last_question: str | None = None,
+        last_question_node: str | None = None,
+        goal_intake_complete: bool | None = None,
+        current_node_being_collected: str | None = None,
+        current_node_missing_fields: list[str] | None = None,
+        asked_questions: dict[str, list[str]] | None = None,
+        goal_exploration_summary: str | None = None,
+        goal_details_mode: bool = False,
+        goal_details_goal_id: str | None = None,
+        goal_details_missing_fields: list[str] | None = None,
+    ) -> AsyncIterator[str | ConversationResponse]:
+        """
+        Streaming version: yields str chunks for response_text,
+        then yields the final ConversationResponse with all metadata.
+        """
+        prompt_template = self._load_prompt()
+        goal_state = self._format_goal_state(qualified_goals, possible_goals, rejected_goals)
+        data_summary = self._summarize_graph_data(graph_snapshot)
+        asked_questions_formatted = "None"
+        if asked_questions:
+            parts = []
+            for node, fields in asked_questions.items():
+                if fields:
+                    parts.append(f"{node}: [{', '.join(fields)}]")
+            asked_questions_formatted = "; ".join(parts) if parts else "None"
+        prompt = prompt_template.format(
+            user_message=user_message,
+            current_node_being_collected=current_node_being_collected or "None",
+            goal_intake_complete="true" if goal_intake_complete else "false",
+            graph_snapshot=json.dumps(graph_snapshot, indent=2),
+            data_summary=data_summary,
+            goal_state=json.dumps(goal_state, indent=2),
+            qualified_goals_list=", ".join(qualified_goals.keys()) if qualified_goals else "None",
+            possible_goals_list=", ".join(possible_goals.keys()) if possible_goals else "None",
+            rejected_goals_list=", ".join(rejected_goals) if rejected_goals else "None",
+            visited_nodes=", ".join(visited_nodes) if visited_nodes else "None",
+            omitted_nodes=", ".join(omitted_nodes) if omitted_nodes else "None",
+            pending_nodes=", ".join(pending_nodes) if pending_nodes else "None",
+            all_node_schemas=json.dumps(all_node_schemas, indent=2),
+            last_question=last_question or "None",
+            last_question_node=last_question_node or "None",
+            current_node_missing_fields=", ".join(current_node_missing_fields) if current_node_missing_fields else "None",
+            asked_questions=asked_questions_formatted,
+            goal_exploration_summary=goal_exploration_summary or "No goals explored yet.",
+            goal_details_mode="true" if goal_details_mode else "false",
+            goal_details_goal_id=goal_details_goal_id or "None",
+            goal_details_missing_fields=", ".join(goal_details_missing_fields) if goal_details_missing_fields else "None",
+        )
+
+        # Use a separate agent instance with parse_response=False for streaming
+        if not hasattr(self, "_stream_agent") or self._stream_agent is None:
+            self._stream_agent = Agent(
+                model=OpenAIChat(id=self.model_id),
+                instructions=prompt,
+                output_schema=ConversationResponse,
+                parse_response=False,
+                db=self._get_db(),
+                user_id=self.session_id,
+                add_history_to_context=True,
+                num_history_runs=5,
+                enable_session_summaries=True,
+                add_session_summary_to_context=True,
+                session_state={
+                    "goal_exploration_results": {},
+                    "conversation_phase": "goal_intake",
+                },
+                add_session_state_to_context=True,
+                markdown=False,
+                debug_mode=False,
+                use_json_mode=True,
+            )
+        else:
+            self._stream_agent.instructions = prompt
+
+        extractor = ResponseTextExtractor()
+        run_response = await self._stream_agent.arun(
+            "Analyze the user's message in full context. "
+            "Determine intent, detect goals, identify information gaps, and generate an appropriate response. "
+            "Remember: You are Vecta - warm but direct, person-first, one question at a time.",
+            stream=True,
+        )
+        async for event in run_response.response_stream:
+            chunk_text = ""
+            if hasattr(event, "content") and event.content:
+                chunk_text = event.content
+            elif hasattr(event, "delta") and event.delta:
+                chunk_text = event.delta
+            if chunk_text:
+                delta = extractor.feed(chunk_text)
+                if delta:
+                    yield delta
+
+        # Parse complete JSON into structured response
+        try:
+            parsed = ConversationResponse.model_validate_json(extractor.buffer)
+        except Exception:
+            # Fallback: try to extract what we can
+            parsed = ConversationResponse(response_text=extractor.buffer)
+        yield parsed
+
     def cleanup(self) -> None:
         """Clean up agent resources."""
         self._agent = None
+        if hasattr(self, "_stream_agent"):
+            self._stream_agent = None
 

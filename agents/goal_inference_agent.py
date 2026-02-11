@@ -109,6 +109,25 @@ class GoalInferenceAgent:
             "Infer any financial goals from the visited node data. Output JSON only."
         ).content
 
+    async def ainfer(
+        self,
+        visited_node_snapshots: dict[str, dict[str, Any]],
+        goal_state: dict[str, Any],
+        goal_type_enum_values: list[str],
+    ) -> GoalInferenceResponse:
+        """Async version of infer using agent.arun()."""
+        prompt_template = self._load_prompt()
+        prompt = prompt_template.format(
+            goal_type_enum_values=json.dumps(goal_type_enum_values, indent=2),
+            visited_node_snapshots=json.dumps(visited_node_snapshots, indent=2),
+            goal_state=json.dumps(goal_state, indent=2),
+        )
+        agent = self._ensure_agent(prompt)
+        response = await agent.arun(
+            "Infer any financial goals from the visited node data. Output JSON only."
+        )
+        return response.content
+
     def cleanup(self) -> None:
         self._agent = None
 

@@ -123,6 +123,38 @@ class WSGoalQualification(BaseModel):
     goal_state: dict[str, Any] | None = None
 
 
+# Streaming schemas (for token-by-token response delivery)
+
+class WSStreamStart(BaseModel):
+    """Server → Client: Response streaming is about to begin."""
+    type: str = "stream_start"
+    mode: str = "data_gathering"
+
+
+class WSStreamDelta(BaseModel):
+    """Server → Client: Incremental text chunk from the agent."""
+    type: str = "stream_delta"
+    delta: str
+
+
+class WSStreamEnd(BaseModel):
+    """Server → Client: Streaming complete, full metadata attached."""
+    type: str = "stream_end"
+    mode: str = "data_gathering"
+    question: str | None = None
+    node_name: str | None = None
+    extracted_data: dict[str, Any] = {}
+    complete: bool = False
+    upcoming_nodes: list[str] | None = None
+    all_collected_data: dict[str, dict[str, Any]] = {}
+    goal_state: dict[str, Any] | None = None
+    # Optional fields for specific modes
+    exploration_context: dict[str, Any] | None = None
+    scenario_context: dict[str, Any] | None = None
+    visualization: dict[str, Any] | None = None
+    phase1_summary: str | None = None
+
+
 # REST Schemas (for summary endpoint)
 
 class SummaryResponse(BaseModel):

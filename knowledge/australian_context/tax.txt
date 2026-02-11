@@ -1,0 +1,57 @@
+AUSTRALIAN TAX - KEY FACTS
+
+Income Tax Brackets (2024-25):
+- $0 - $18,200: Nil
+- $18,201 - $45,000: 16 cents per dollar over $18,200
+- $45,001 - $135,000: $4,288 + 30 cents per dollar over $45,000
+- $135,001 - $190,000: $31,288 + 37 cents per dollar over $135,000
+- $190,001+: $51,638 + 45 cents per dollar over $190,000
+- Medicare Levy: additional 2% on taxable income
+
+Tax Offsets:
+- Low Income Tax Offset (LITO): up to $700 for incomes up to $45,000
+  Reduces to zero at $66,668
+- Low and Middle Income Tax Offset (LMITO): ended 30 June 2022
+- Senior Australians and Pensioners Tax Offset (SAPTO)
+- Private Health Insurance Rebate (income-tested)
+
+Deductions:
+- Work-related expenses: must be directly related to earning income
+- Working from home: fixed rate 67 cents per hour (from 2022-23)
+  or actual cost method
+- Self-education: if related to current employment
+- Charitable donations: to DGR-registered organisations
+- Investment property expenses: interest, depreciation, repairs, management
+- Income protection insurance premiums
+
+Capital Gains Tax (CGT):
+- CGT discount: 50% for individuals on assets held 12+ months
+- No CGT on main residence (primary home)
+- CGT applies to: investment property, shares, crypto, collectables
+- Net capital loss: can be carried forward indefinitely
+- Small business CGT concessions available
+
+Negative Gearing:
+- Claim investment losses against other income (salary, business)
+- Common with property: rental income < expenses = tax loss
+- Expenses include: interest, depreciation, repairs, insurance, management
+- Effectively reduces marginal tax rate on investment
+
+Family Trusts:
+- Discretionary trust: distribute income to beneficiaries at lower tax rates
+- Can split income among family members (including adult children)
+- Minor beneficiaries: unearned income taxed at penalty rates above $416
+- Not as effective since Stage 3 tax cuts (lower marginal rates)
+- Setup cost: $1,500-$3,000, annual compliance: $1,000-$2,000
+
+PAYG Instalments:
+- Pre-payment of tax on investment and business income
+- Quarterly or annual depending on income level
+- Can vary instalment amount if income changes
+
+Tax Planning Strategies (Educational, not advice):
+- Salary sacrifice to super (reduce taxable income, boost retirement)
+- Timing of deductions (prepay expenses before 30 June)
+- Spouse contribution splitting (super)
+- Structure investments tax-effectively (individual vs trust vs company)
+- Maximise deductions: keep receipts, claim all eligible expenses

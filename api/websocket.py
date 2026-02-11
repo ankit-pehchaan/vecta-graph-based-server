@@ -1,8 +1,15 @@
 """
 WebSocket handler for real-time bidirectional communication.
+
+Supports two response modes:
+1. **Streaming** (default) — uses ``orchestrator.arespond_stream()``
+   to send ``stream_start → stream_delta* → stream_end`` events.
+2. **Legacy fallback** — if the orchestrator doesn't expose
+   ``arespond_stream``, falls back to the synchronous ``respond()``.
 """
 
 import json
+import logging
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -17,6 +24,9 @@ from api.schemas import (
     WSResumePrompt,
     WSScenarioQuestion,
     WSSessionStart,
+    WSStreamDelta,
+    WSStreamEnd,
+    WSStreamStart,
     WSTraversalPaused,
     WSVisualization,
     WSGoalQualification,
@@ -24,6 +34,8 @@ from api.schemas import (
 from api.sessions import session_manager
 from auth.dependencies import get_auth_service
 from auth.exceptions import AuthException
+
+logger = logging.getLogger(__name__)
 
 
 def _serialize_goal_state(goal_state: dict[str, Any]) -> dict[str, list]:
@@ -57,6 +69,175 @@ def _serialize_goal_state(goal_state: dict[str, Any]) -> dict[str, list]:
         "possible_goals": possible,
         "rejected_goals": rejected,
     }
+
+
+async def _handle_streaming_response(
+    websocket: WebSocket,
+    orchestrator: Any,
+    user_input: str,
+) -> None:
+    """
+    Iterate over orchestrator.arespond_stream() and send WS messages.
+
+    The generator yields dicts with ``type`` in
+    {``stream_start``, ``stream_delta``, ``stream_end``}.
+    """
+    async for event in orchestrator.arespond_stream(user_input):
+        event_type = event.get("type")
+
+        if event_type == "stream_start":
+            await websocket.send_json(
+                WSStreamStart(mode=event.get("mode", "data_gathering")).model_dump()
+            )
+
+        elif event_type == "stream_delta":
+            await websocket.send_json(
+                WSStreamDelta(delta=event.get("delta", "")).model_dump()
+            )
+
+        elif event_type == "stream_end":
+            await _send_stream_end_payload(websocket, orchestrator, event)
+
+
+async def _send_stream_end_payload(
+    websocket: WebSocket,
+    orchestrator: Any,
+    result: dict[str, Any],
+) -> None:
+    """
+    Dispatch the final ``stream_end`` payload as the appropriate WS message(s).
+
+    This mirrors the original ``respond()`` dispatch logic but is used after
+    the streaming cycle completes.
+    """
+    mode = result.get("mode", "data_gathering")
+    goal_state = None
+    if result.get("goal_state"):
+        goal_state = _serialize_goal_state(result["goal_state"])
+
+    if mode == "goal_qualification":
+        await websocket.send_json(
+            WSGoalQualification(
+                question=result.get("question", ""),
+                goal_id=result.get("goal_id", ""),
+                goal_description=result.get("goal_description"),
+                goal_state=goal_state,
+            ).model_dump()
+        )
+        return
+
+    if mode == "goal_exploration":
+        exploration_ctx = result.get("exploration_context", {})
+        await websocket.send_json(
+            WSStreamEnd(
+                mode="goal_exploration",
+                question=result.get("question"),
+                complete=result.get("complete", False),
+                all_collected_data=result.get("all_collected_data", {}),
+                goal_state=goal_state,
+                upcoming_nodes=result.get("upcoming_nodes"),
+                exploration_context=exploration_ctx,
+            ).model_dump()
+        )
+        return
+
+    if mode == "scenario_framing":
+        scenario_ctx = result.get("scenario_context", {})
+        await websocket.send_json(
+            WSScenarioQuestion(
+                question=result.get("question", ""),
+                goal_id=scenario_ctx.get("goal_id", ""),
+                goal_description=scenario_ctx.get("goal_description"),
+                turn=scenario_ctx.get("turn", 1),
+                max_turns=scenario_ctx.get("max_turns", 3),
+                goal_confirmed=scenario_ctx.get("goal_confirmed"),
+                goal_rejected=scenario_ctx.get("goal_rejected"),
+                goal_state=goal_state,
+            ).model_dump()
+        )
+        return
+
+    if mode == "visualization":
+        # Multi-event visualization path
+        if isinstance(result.get("events"), list):
+            for ev in result["events"]:
+                if ev.get("kind") == "calculation":
+                    await websocket.send_json(
+                        WSCalculation(
+                            calculation_type=ev.get("calculation_type", ""),
+                            result=ev.get("result", {}),
+                            can_calculate=bool(ev.get("can_calculate")),
+                            missing_data=ev.get("missing_data", []),
+                            message=ev.get("message", ""),
+                            data_used=ev.get("data_used", []),
+                        ).model_dump()
+                    )
+                elif ev.get("kind") == "visualization":
+                    await websocket.send_json(
+                        WSVisualization(
+                            calculation_type=ev.get("calculation_type"),
+                            inputs=ev.get("inputs", {}),
+                            chart_type=ev.get("chart_type", ""),
+                            data=ev.get("data", {}),
+                            title=ev.get("title", ""),
+                            description=ev.get("description", ""),
+                            config=ev.get("config", {}),
+                            charts=ev.get("charts", []),
+                        ).model_dump()
+                    )
+        else:
+            # Legacy single-calculation path
+            await websocket.send_json(
+                WSCalculation(
+                    calculation_type=result.get("calculation_type", ""),
+                    result=result.get("result", {}),
+                    can_calculate=result.get("can_calculate", False),
+                    missing_data=result.get("missing_data", []),
+                    message=result.get("message", ""),
+                    data_used=result.get("data_used", []),
+                ).model_dump()
+            )
+            if result.get("can_calculate") and result.get("chart_type"):
+                await websocket.send_json(
+                    WSVisualization(
+                        calculation_type=result.get("calculation_type"),
+                        inputs=result.get("inputs", {}),
+                        chart_type=result["chart_type"],
+                        data=result.get("data", {}),
+                        title=result.get("title", ""),
+                        description=result.get("description", ""),
+                        config=result.get("config", {}),
+                        charts=result.get("charts", []),
+                    ).model_dump()
+                )
+            if result.get("can_calculate") and result.get("resume_prompt"):
+                await websocket.send_json(
+                    WSResumePrompt(message=result["resume_prompt"]).model_dump()
+                )
+            elif not result.get("can_calculate") and orchestrator.traversal_paused:
+                await websocket.send_json(
+                    WSTraversalPaused(
+                        paused_node=orchestrator.paused_node,
+                        message=result.get("message", ""),
+                    ).model_dump()
+                )
+        return
+
+    # Default: data_gathering — send stream_end with full metadata
+    await websocket.send_json(
+        WSStreamEnd(
+            mode=mode,
+            question=result.get("question"),
+            node_name=result.get("node_name"),
+            extracted_data=result.get("extracted_data", {}),
+            complete=result.get("complete", False),
+            upcoming_nodes=result.get("upcoming_nodes"),
+            all_collected_data=result.get("all_collected_data", {}),
+            goal_state=goal_state,
+            visualization=result.get("visualization"),
+            phase1_summary=result.get("phase1_summary"),
+        ).model_dump()
+    )
 
 
 async def websocket_handler(websocket: WebSocket, session_id: str | None = None):
@@ -290,7 +471,7 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                 await websocket.close()
                 return
         
-        # Main loop: receive answers, send questions
+        # Main loop: receive answers, send questions (streaming-aware)
         while True:
             # Receive user answer
             data = await websocket.receive_text()
@@ -305,162 +486,19 @@ async def websocket_handler(websocket: WebSocket, session_id: str | None = None)
                     )
                     continue
                 
-                # Process response with error handling
+                # ---- Streaming path (preferred) ----
                 try:
-                    result = orchestrator.respond(answer_msg.answer)
+                    await _handle_streaming_response(websocket, orchestrator, answer_msg.answer)
                 except RuntimeError as e:
-                    # Agent parsing failed, ask user to rephrase
                     await websocket.send_json(
                         WSError(
                             message=f"I had trouble understanding that. Could you please rephrase? ({str(e)})"
                         ).model_dump()
                     )
-                    continue
                 except Exception as e:
+                    logger.exception("Error in streaming response")
                     await websocket.send_json(
                         WSError(message=f"Error processing response: {str(e)}").model_dump()
-                    )
-                    continue
-                
-                # Handle different modes
-                mode = result.get("mode", "data_gathering")
-                
-                if mode == "goal_qualification":
-                    goal_state = None
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                    await websocket.send_json(
-                        WSGoalQualification(
-                            question=result.get("question", ""),
-                            goal_id=result.get("goal_id", ""),
-                            goal_description=result.get("goal_description"),
-                            goal_state=goal_state,
-                        ).model_dump()
-                    )
-                    continue
-
-                if mode == "visualization":
-                    # New path: orchestrator may return an event list (multiple calcs/viz per user request)
-                    if isinstance(result.get("events"), list):
-                        for ev in result["events"]:
-                            if ev.get("kind") == "calculation":
-                                await websocket.send_json(
-                                    WSCalculation(
-                                        calculation_type=ev.get("calculation_type", ""),
-                                        result=ev.get("result", {}),
-                                        can_calculate=bool(ev.get("can_calculate")),
-                                        missing_data=ev.get("missing_data", []),
-                                        message=ev.get("message", ""),
-                                        data_used=ev.get("data_used", []),
-                                    ).model_dump()
-                                )
-                            elif ev.get("kind") == "visualization":
-                                await websocket.send_json(
-                                    WSVisualization(
-                                        calculation_type=ev.get("calculation_type"),
-                                        inputs=ev.get("inputs", {}),
-                                        chart_type=ev.get("chart_type", ""),
-                                        data=ev.get("data", {}),
-                                        title=ev.get("title", ""),
-                                        description=ev.get("description", ""),
-                                        config=ev.get("config", {}),
-                                        charts=ev.get("charts", []),
-                                    ).model_dump()
-                                )
-                    else:
-                        # Legacy single-calculation path
-                        await websocket.send_json(
-                            WSCalculation(
-                                calculation_type=result["calculation_type"],
-                                result=result.get("result", {}),
-                                can_calculate=result["can_calculate"],
-                                missing_data=result.get("missing_data", []),
-                                message=result["message"],
-                                data_used=result.get("data_used", []),
-                            ).model_dump()
-                        )
-                        
-                        # Then send visualization if calculation succeeded AND chart data exists
-                        if result.get("can_calculate") and "chart_type" in result and result.get("chart_type"):
-                            await websocket.send_json(
-                                WSVisualization(
-                                    calculation_type=result.get("calculation_type"),
-                                    inputs=result.get("inputs", {}),
-                                    chart_type=result["chart_type"],
-                                    data=result.get("data", {}),
-                                    title=result.get("title", ""),
-                                    description=result.get("description", ""),
-                                    config=result.get("config", {}),
-                                    charts=result.get("charts", []),
-                                ).model_dump()
-                            )
-                        
-                        # Send resume prompt if calculation succeeded
-                        if result.get("can_calculate") and result.get("resume_prompt"):
-                            await websocket.send_json(
-                                WSResumePrompt(message=result["resume_prompt"]).model_dump()
-                            )
-                        # If missing data, traversal might be paused
-                        elif not result.get("can_calculate") and orchestrator.traversal_paused:
-                            await websocket.send_json(
-                                WSTraversalPaused(
-                                    paused_node=orchestrator.paused_node,
-                                    message=result.get("message", ""),
-                                ).model_dump()
-                            )
-                
-                elif mode == "scenario_framing":
-                    # Scenario framing for inferred goals
-                    scenario_ctx = result.get("scenario_context", {})
-                    goal_state = None
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                    await websocket.send_json(
-                        WSScenarioQuestion(
-                            question=result.get("question", ""),
-                            goal_id=scenario_ctx.get("goal_id", ""),
-                            goal_description=scenario_ctx.get("goal_description"),
-                            turn=scenario_ctx.get("turn", 1),
-                            max_turns=scenario_ctx.get("max_turns", 3),
-                            goal_confirmed=scenario_ctx.get("goal_confirmed"),
-                            goal_rejected=scenario_ctx.get("goal_rejected"),
-                            goal_state=goal_state,
-                        ).model_dump()
-                    )
-                
-                elif mode == "data_gathering":
-                    # Send the question/response with complete flag
-                    # complete=True means phase1 is done (source of truth: phase1_complete)
-                    goal_state = None
-                    if result.get("goal_state"):
-                        goal_state = _serialize_goal_state(result["goal_state"])
-                    await websocket.send_json(
-                        WSQuestion(
-                            question=result.get("question"),
-                            node_name=result.get("node_name", ""),
-                            extracted_data=result.get("extracted_data", {}),
-                            complete=result.get("complete", False),  # This is phase1_complete
-                            upcoming_nodes=result.get("upcoming_nodes", []),
-                            all_collected_data=orchestrator.graph_memory.get_all_nodes_data(),
-                            planned_target_node=result.get("planned_target_node"),
-                            planned_target_field=result.get("planned_target_field"),
-                            goal_state=goal_state,
-                        ).model_dump()
-                    )
-                    
-                    # If phase1 complete, we can keep the connection open for visualizations
-                    # No need to send separate WSComplete - complete flag in WSQuestion is enough
-                
-                elif mode == "new_goal":
-                    # New goal requested
-                    await websocket.send_json(
-                        WSError(message="Starting a new goal requires creating a new session. Please refresh and start again.").model_dump()
-                    )
-                
-                else:
-                    # Unknown mode - send error
-                    await websocket.send_json(
-                        WSError(message=f"Unknown mode: {mode}. Please continue with data gathering or request a calculation/visualization.").model_dump()
                     )
             
             except json.JSONDecodeError:

@@ -115,6 +115,11 @@ class ScenarioFramerAgent:
                 user_id=self.session_id,
                 # Use explicit scenario_history passed by the orchestrator.
                 add_history_to_context=False,
+                # Session state for scenario framing context
+                session_state={
+                    "scenario_context": {},
+                },
+                add_session_state_to_context=True,
                 markdown=False,
                 debug_mode=False,
                 use_json_mode=True,
@@ -304,6 +309,84 @@ class ScenarioFramerAgent:
         
         return response
     
+    # ------------------------------------------------------------------
+    # Async API
+    # ------------------------------------------------------------------
+
+    async def aprocess(
+        self,
+        user_message: str,
+        goal_candidate: dict[str, Any],
+        graph_snapshot: dict[str, Any],
+        current_turn: int = 1,
+        scenario_history: list[dict[str, str]] | None = None,
+    ) -> ScenarioFramerResponse:
+        """Async version of process using agent.arun()."""
+        prompt_template = self._load_prompt()
+        financial_context = self._summarize_financial_context(graph_snapshot)
+
+        history_str = "None (first turn)"
+        if scenario_history:
+            history_parts = []
+            for turn in scenario_history:
+                role = turn.get("role", "unknown")
+                content = turn.get("content", "")
+                history_parts.append(f"{role}: {content}")
+            history_str = "\n".join(history_parts)
+
+        prompt = prompt_template.format(
+            user_message=user_message,
+            goal_id=goal_candidate.get("goal_id", "unknown"),
+            goal_description=goal_candidate.get("description", ""),
+            goal_confidence=goal_candidate.get("confidence", 0.0),
+            deduced_from=", ".join(goal_candidate.get("deduced_from", [])),
+            financial_context=financial_context,
+            graph_snapshot=json.dumps(graph_snapshot, indent=2),
+            current_turn=current_turn,
+            max_turns=self.MAX_TURNS,
+            scenario_history=history_str,
+        )
+
+        agent = self._ensure_agent(prompt)
+        response = (await agent.arun(
+            "Analyze the user's response and generate the next turn in the scenario conversation. "
+            "Help them emotionally realize the importance of this goal through reflection, not persuasion."
+        )).content
+        if not response.goal_id:
+            response.goal_id = goal_candidate.get("goal_id", "unknown")
+        return response
+
+    async def astart_scenario(
+        self,
+        goal_candidate: dict[str, Any],
+        graph_snapshot: dict[str, Any],
+    ) -> ScenarioFramerResponse:
+        """Async version of start_scenario using agent.arun()."""
+        prompt_template = self._load_prompt()
+        financial_context = self._summarize_financial_context(graph_snapshot)
+
+        prompt = prompt_template.format(
+            user_message="[START SCENARIO - Generate initial scenario question]",
+            goal_id=goal_candidate.get("goal_id", "unknown"),
+            goal_description=goal_candidate.get("description", ""),
+            goal_confidence=goal_candidate.get("confidence", 0.0),
+            deduced_from=", ".join(goal_candidate.get("deduced_from", [])),
+            financial_context=financial_context,
+            graph_snapshot=json.dumps(graph_snapshot, indent=2),
+            current_turn=1,
+            max_turns=self.MAX_TURNS,
+            scenario_history="None (first turn)",
+        )
+
+        agent = self._ensure_agent(prompt)
+        response = (await agent.arun(
+            "Generate the initial scenario question to help the user emotionally realize "
+            "the importance of this goal. Use their actual financial data to make it personal."
+        )).content
+        if not response.goal_id:
+            response.goal_id = goal_candidate.get("goal_id", "unknown")
+        return response
+
     def cleanup(self) -> None:
         """Clean up agent resources."""
         self._agent = None

@@ -69,6 +69,9 @@ class Goals(BaseNode):
     Each goal is represented as a separate node instance.
     Contains information about goal type, target amount, target year,
     priority, current savings, inflation rate, and status.
+    
+    The emotional_importance and is_strategy_for fields are populated
+    during Socratic goal exploration and capture the "why" behind the goal.
     """
     
     node_type: str = Field(default="goals", frozen=True)
@@ -77,4 +80,22 @@ class Goals(BaseNode):
     target_year: int | None = Field(default=None, description="Target year to achieve the goal")
     priority: int | None = Field(default=None, description="Priority level (1=highest)")
     status: GoalStatus | None = Field(default=None, description="Current status of the goal")
+    
+    # Exploration-enriched fields (populated by GoalExplorationAgent)
+    emotional_importance: str | None = Field(
+        default=None,
+        description=(
+            "Why this goal matters emotionally to the user. "
+            "Captured during Socratic goal exploration, e.g. "
+            "'Legacy -- wants to break cycle of financial struggle for children'"
+        ),
+    )
+    is_strategy_for: str | None = Field(
+        default=None,
+        description=(
+            "If this goal is actually a strategy, what is the real underlying goal? "
+            "e.g. 'Generational wealth / family financial security' when the surface "
+            "goal is 'buy investment property'. Null if the goal IS the core goal."
+        ),
+    )
 

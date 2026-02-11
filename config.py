@@ -91,6 +91,11 @@ class Config:
     
     # Database paths
     DB_DIR: str = os.getenv("DB_DIR", "tmp")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    
+    # LanceDB paths (for Australian financial Knowledge Base)
+    LANCEDB_URI: str = os.getenv("LANCEDB_URI", os.path.join(os.getenv("DB_DIR", "tmp"), "lancedb"))
+    LANCEDB_TABLE: str = os.getenv("LANCEDB_TABLE", "au_financial_context")
     
     # API configuration
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://vectatech.com.au,https://www.vectatech.com.au").split(",")

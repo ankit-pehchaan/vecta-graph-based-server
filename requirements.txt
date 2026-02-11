@@ -16,5 +16,8 @@ python-dotenv
 # OpenAI (used by agno.models.openai)
 openai
 sqlalchemy
+# Vector DB for Australian context Knowledge Base
+lancedb
+tantivy
 pytest
 pytest-asyncio

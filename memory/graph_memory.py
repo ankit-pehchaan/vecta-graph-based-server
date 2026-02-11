@@ -53,6 +53,10 @@ class GraphMemory(BaseModel):
     rejected_goals: set[str] = Field(default_factory=set)
     rejected_goal_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
     
+    # Goal exploration results: goal_id -> GoalUnderstanding dict
+    # Stores the structured output of Socratic goal exploration
+    goal_understandings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    
     # Question tracking to prevent repetition
     # node_name -> set of field_names that have been asked
     asked_questions: dict[str, set[str]] = Field(default_factory=dict)
@@ -344,6 +348,48 @@ class GraphMemory(BaseModel):
             "description": previous.get("description"),
         }
     
+    # Goal understanding methods (Socratic exploration results)
+    def add_goal_understanding(self, goal_id: str, understanding: dict[str, Any]) -> None:
+        """Store the structured exploration output for a goal."""
+        if not goal_id:
+            return
+        self.goal_understandings[goal_id] = understanding
+
+    def get_goal_understanding(self, goal_id: str) -> dict[str, Any] | None:
+        """Get the exploration output for a goal."""
+        return self.goal_understandings.get(goal_id)
+
+    def get_all_goal_understandings(self) -> dict[str, dict[str, Any]]:
+        """Get all goal understandings (for context injection)."""
+        return self.goal_understandings.copy()
+
+    def get_exploration_summary(self) -> str:
+        """
+        Human-readable summary of explored goals for prompt injection.
+
+        Used by ConversationAgent to make fact-find questions contextually aware.
+        """
+        if not self.goal_understandings:
+            return "No goals explored yet."
+        parts: list[str] = []
+        for goal_id, u in self.goal_understandings.items():
+            surface = u.get("surface_goal", goal_id)
+            strategy = u.get("is_strategy_for")
+            themes = u.get("emotional_themes", [])
+            values = u.get("core_values", [])
+            quotes = u.get("key_quotes", [])
+            line = f"- {surface}"
+            if strategy:
+                line += f" (strategy for: {strategy})"
+            if themes:
+                line += f" | themes: {', '.join(themes)}"
+            if values:
+                line += f" | values: {', '.join(values)}"
+            if quotes:
+                line += f" | user said: \"{quotes[0]}\""
+            parts.append(line)
+        return "\n".join(parts)
+
     # Question tracking methods
     def mark_question_asked(self, node: str, field: str) -> None:
         """Mark a question as asked for a specific node and field."""
@@ -394,6 +440,7 @@ class GraphMemory(BaseModel):
             "qualified_goals": self.qualified_goals,
             "rejected_goals": list(self.rejected_goals),
             "rejected_goal_details": self.rejected_goal_details,
+            "goal_understandings": self.goal_understandings,
             "asked_questions": self.get_asked_questions_dict(),
         }
     
@@ -434,6 +481,7 @@ class GraphMemory(BaseModel):
             qualified_goals=data.get("qualified_goals", {}),
             rejected_goals=set(data.get("rejected_goals", [])),
             rejected_goal_details=data.get("rejected_goal_details", {}),
+            goal_understandings=data.get("goal_understandings", {}),
             asked_questions=asked_questions,
         )
 
