@@ -1,34 +1,31 @@
 """
-Agents module for Vecta.
+Agents module for Vecta v2.
 
 Agents:
-1. StateResolverAgent - Extract facts from user input
-2. GoalExplorationAgent - Socratic deep-dive into goal motivations
-3. ConversationAgent - Unified brain (intent, goals, questions, flow)
-4. GoalInferenceAgent - Infer goals from completed node data
-5. ScenarioFramerAgent - Emotional scenario pivot for inferred goals
-6. VisualizationAgent - Generate charts and calculations
+1. VectaAgent - Unified conversational agent (single voice, phase-aware)
+2. FactExtractor - Parallel fact extraction from user messages
+3. GoalInferenceAgent - Infer goals from completed node data
+4. ScenarioFramerAgent - Emotional scenario pivot for inferred goals
 
-Compliance rules are embedded directly in each response-generating agent's
-system prompt (conversation, goal_exploration, scenario_framer) instead of
-running a separate ComplianceAgent LLM call.
+Compliance rules are embedded directly in VectaAgent and ScenarioFramerAgent
+system prompts instead of running a separate ComplianceAgent.
 """
 
-from agents.conversation_agent import ConversationAgent, ConversationResponse, GoalCandidate
-from agents.goal_exploration_agent import GoalExplorationAgent, GoalExplorationResponse
+from agents.vecta_agent import VectaAgent, VectaResponse, GoalCandidate
+from agents.fact_extractor import FactExtractor, FactExtractorResponse
+from agents.goal_inference_agent import GoalInferenceAgent, GoalInferenceResponse
 from agents.scenario_framer_agent import ScenarioFramerAgent, ScenarioFramerResponse
-from agents.state_resolver_agent import StateResolverAgent, StateResolverResponse
 
 __all__ = [
-    # Main agents
-    "StateResolverAgent",
-    "GoalExplorationAgent",
-    "ConversationAgent",
+    # Primary agents
+    "VectaAgent",
+    "FactExtractor",
+    "GoalInferenceAgent",
     "ScenarioFramerAgent",
     # Response types
-    "StateResolverResponse",
-    "GoalExplorationResponse",
-    "ConversationResponse",
+    "VectaResponse",
+    "FactExtractorResponse",
+    "GoalInferenceResponse",
     "ScenarioFramerResponse",
     "GoalCandidate",
 ]

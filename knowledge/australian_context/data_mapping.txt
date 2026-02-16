@@ -1,0 +1,104 @@
+AUSTRALIAN FINANCIAL DATA MAPPING REFERENCE
+===========================================
+
+This document provides mapping rules for extracting structured financial data
+from conversational Australian English. Used by the FactExtractor to correctly
+route user statements to the right graph nodes and fields.
+
+INCOME STREAMS (multi-stream portfolio → Income.income_streams_annual):
+- "I earn 5k rent per month" → rental_income = 60000 (monthly × 12)
+- "My salary is 120k" → salary = 120000
+- "I get dividends of about 5k a year" → dividend_income = 5000
+- "Government benefits of 500 a fortnight" → government_benefit = 13000
+- "Centrelink payments" → government_benefit
+- "Side hustle / freelance" → other_income
+
+SUPERANNUATION (→ Retirement node + Assets dual-mapping):
+- "My super is 150k" → Retirement.super_balance = 150000 AND Assets.asset_current_amount["superannuation"] = 150000
+- "I salary sacrifice 500 per month" → Retirement.salary_sacrifice_monthly = 500
+- "I personally contribute 200 per month" → Retirement.personal_contribution_monthly = 200
+- "It's with AustralianSuper" → Retirement.super_fund = "AustralianSuper", super_account_type = "industry_fund"
+- "Rest Super / Hostplus / UniSuper" → Retirement.super_fund = <name>, super_account_type = "industry_fund"
+- "Self-managed super fund / SMSF" → Retirement.super_account_type = "smsf"
+- "Her super is with Sunsuper / Australian Retirement Trust" → Marriage.spouse_super_fund = <name>, Marriage.spouse_super_balance if amount given
+- "Hers is around 220k" (spouse super) → Marriage.spouse_super_balance = 220000
+
+INSURANCE (portfolio with held_through → Insurance.coverages):
+- "Employer provides life insurance" → coverages["life"] = {covered_person: "self", held_through: "employer"}
+- "Life insurance through my super" → coverages["life"] = {covered_person: "self", held_through: "super"}
+- "We have private health" → coverages["private_health"] = {covered_person: "family", held_through: "personal"}
+- "Income protection through work" → coverages["income_protection"] = {held_through: "employer"}
+- "Life cover is 500k, $60 a month" → coverages["life"] = {coverage_amount: 500000, premium_amount: 60, premium_frequency: "monthly"}
+- "Waiting period is 4 weeks" → coverages["income_protection"] = {waiting_period_weeks: 4}
+
+ASSETS (portfolio by category → Assets.asset_current_amount):
+- "I own a flat worth 500k" → property = 500000
+- "Investment property worth 650k" → investment_property = 650000
+- "About 30k in savings" → cash_deposits = 30000
+- "50k in shares" → stocks_etfs = 50000
+- "40k in managed funds" → managed_funds = 40000
+- "10k in crypto" → crypto = 10000
+
+LIABILITIES (portfolio by type → Loan.liabilities):
+- "Home loan of 400k" → home_loan = {outstanding_amount: 400000}
+- "5k on credit card" → credit_card = {outstanding_amount: 5000}
+- "Still have HECS" → hecs_help = {} (ask for amount)
+- "Personal loan of 20k paying 500 a month" → personal_loan = {outstanding_amount: 20000, monthly_payment: 500}
+- "Mortgage at 6.5%" → home_loan = {interest_rate: 0.065}
+
+EXPENSES (→ Expenses.monthly_expenses):
+- "Rent is 2000" → rent_mortgage = 2000
+- "Children school is 1000" → education = 1000
+- "My expenses are 50k per year" → other = 4167 (50000/12)
+- Always use monthly amounts. Convert annually ÷ 12, fortnightly × 26 ÷ 12.
+- Valid categories: rent_mortgage, utilities, food, transport, insurance, education, entertainment, childcare, health, other
+
+MARRIAGE/SPOUSE (→ Marriage node):
+- "My wife earns 80k" → Marriage.spouse_income_annual = 80000
+- "Partner is 32" → Marriage.spouse_age = 32
+- "We share all our finances" → Marriage.finances_combined = "fully_combined"
+- "Joint account for bills, own spending money" → Marriage.finances_combined = "partial"
+- "We keep finances separate" → Marriage.finances_combined = "separate"
+- "She works in finance" → Marriage.spouse_occupation = "finance"
+- "He's full-time at the hospital" → Marriage.spouse_occupation = "hospital/medical", spouse_employment_type = "full_time"
+
+DEPENDENTS (→ Dependents node):
+- "buy property for my son" → Dependents.has_children = true, number_of_children >= 1
+- "kids are in school" → Dependents.has_children = true
+- "he'll join uni" → Dependents.child_pathway = "planning_uni"
+- "we'll use HECS" → Dependents.education_funding_preference = "hecs_help"
+- "Both at a Catholic school" → Dependents.education_type = "catholic"
+- "Private school" → Dependents.education_type = "private"
+- "Public school" → Dependents.education_type = "public"
+- "About 8 grand a year for school" → Dependents.annual_education_cost = 8000 AND Expenses.monthly_expenses["education"] = 667
+- "Not supporting parents" → Dependents.supporting_parents = false
+
+DUAL MAPPING RULES (extract to MULTIPLE nodes when applicable):
+- Education costs → BOTH Dependents.annual_education_cost AND Expenses.monthly_expenses["education"]
+- Super balance → BOTH Retirement.super_balance AND Assets.asset_current_amount["superannuation"]
+- Savings → BOTH Savings.total_savings AND Assets.asset_current_amount["cash_deposits"]
+- Mortgage payment → BOTH Loan.liabilities["home_loan"].monthly_payment AND Expenses.monthly_expenses["rent_mortgage"]
+
+PERSONAL (→ Personal node):
+- "I'm a project manager" → Personal.occupation = "project manager"
+- "Full-time" → Personal.employment_type = "full_time"
+- "Part-time / casual / contract" → Personal.employment_type accordingly
+- "I'm 42" → Personal.age = 42
+
+CONVERSATIONAL LANGUAGE INFERENCE:
+- "the missus" / "me missus" → Personal.marital_status = "married"
+- "grandkids" / "grandchildren" → Dependents.has_children = true
+- "my children" / "kids" (plural) → Dependents.has_children = true, number_of_children >= 2
+- "I'm in me mid-50s" → Personal.age = 55
+- "I work in construction" → Personal.occupation = "construction"
+- "she works in finance" → Marriage.spouse_occupation = "finance"
+- "My wife and I" → Personal.marital_status = "married"
+- "I'm 42, she's 39" → Personal.age = 42, Marriage.spouse_age = 39
+- "Ideally done by 60" → Retirement.target_retirement_age = 60
+
+CURRENCY AND UNIT CONVERSIONS:
+- Fortnightly → monthly: × 26 ÷ 12
+- Weekly → monthly: × 52 ÷ 12
+- Annually → monthly: ÷ 12
+- "k" = thousands (120k = 120000)
+- Default currency is AUD

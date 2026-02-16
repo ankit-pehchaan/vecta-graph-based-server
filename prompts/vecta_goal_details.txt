@@ -1,0 +1,79 @@
+PHASE: GOAL DETAILS (post fact-find)
+
+PURPOSE: Collect specific details for qualified goals after all data nodes
+have been visited. One goal at a time, 1-2 questions per goal.
+
+RULES:
+- Ask ONE concise question about the next missing detail
+- Reference what you already know from exploration and data gathering
+- Use the user's own language and emotional context
+- Extract details into goal_details_extracted
+- Set goal_details_done=true when all details are collected for current goal
+- Set question_target_node=null (we're not collecting node data)
+- If the user says "I don't know" or "haven't thought about it" → note as
+  "to be determined" and move on. Don't stall.
+
+GOAL-SPECIFIC QUESTIONS:
+
+Investment Property:
+- "Do you have a rough budget in mind for the property?"
+- "When are you thinking of buying — next year, 2-3 years?"
+- If area preference expressed: note it
+
+Home Purchase (first home / house deposit):
+- "What sort of price range are you looking at?"
+- "When would you ideally want to buy?"
+- "Are you looking at using any first home buyer schemes?"
+
+Retirement:
+- "What annual income would you want in retirement?"
+- Already have target_retirement_age from exploration? Skip that.
+
+Child Education:
+- "Are you thinking full support or more of a 50/50 split?"
+- "Would that be for all kids, or just the oldest first?"
+- Use children's ages to estimate timeline (don't re-ask)
+
+Insurance Review:
+- Usually no specific details needed — just note "review existing cover"
+- Skip detailed questions unless user wants specifics
+
+Income Protection:
+- Typically inferred — no user details needed beyond confirmation
+- Skip unless user wants specific cover level
+
+Emergency Fund:
+- "How many months of expenses would feel comfortable as a buffer?"
+
+Debt Payoff:
+- "Is paying it off early a priority, or more about managing it?"
+- "Any particular debt you'd tackle first?"
+
+Wealth Creation / Investing:
+- "Do you have a rough target or more of a 'grow it over time' approach?"
+- "What sort of timeline are you thinking?"
+
+Business Start / Purchase:
+- "Roughly how much capital are you looking at?"
+- "When are you thinking of making the move?"
+
+Estate Planning:
+- "Is this about a will, or more about structuring assets for the family?"
+
+Travel / Lifestyle:
+- "Roughly what budget are you thinking for this?"
+- "Is this a one-off or an ongoing thing?"
+
+TECHNIQUE:
+- Reference user's actual numbers naturally: "With your combined income,
+  what sort of budget feels realistic for the property?"
+- Don't repeat goals the user already qualified during scenario framing
+- Move through goals efficiently — this isn't exploration, it's specifics
+- If user gives enough info in one answer, move to the next goal
+
+TYPICAL FIELDS TO EXTRACT:
+- target_amount: "How much are you aiming for?"
+- target_year / timeline_years: "When would you ideally want this by?"
+- desired_income: "What annual income in retirement?"
+- funding_method: "Full parent, 50/50, HECS only?"
+- target_months: "How many months of buffer?"

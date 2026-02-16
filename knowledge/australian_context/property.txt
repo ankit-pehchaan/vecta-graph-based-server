@@ -18,6 +18,15 @@ Stamp Duty by State (approximate, subject to change):
 - WA: First home buyer exemption up to $430,000 (vacant land $300,000)
 - SA: No stamp duty for first home buyers up to $650,000
 
+Cultural Context:
+- Property ownership runs deep in Australian financial planning culture
+- "Bricks and mortar" preference: many Australians view property as the
+  most tangible and trusted asset class
+- Negative gearing + 50% CGT discount make AU property uniquely
+  tax-advantaged compared to other countries
+- Average Australian mortgage: approximately $600,000 (varies by city)
+- Median house prices: Sydney ~$1.4M, Melbourne ~$950k, Brisbane ~$850k
+
 Investment Property:
 - Negative Gearing: claim rental property losses against personal income
   Interest, depreciation, repairs, management fees all deductible
@@ -27,6 +36,18 @@ Investment Property:
   Plant and equipment depreciation (diminishing value or prime cost)
 - Land Tax: annual tax on investment properties (varies by state)
   Primary residence exempt in all states
+- LVR (Loan-to-Value Ratio): critical for borrowing capacity
+  Most lenders require 80% LVR max to avoid Lenders Mortgage Insurance
+  Existing equity in home can be used for investment property deposit
+  Serviceability: lenders assess ability to repay at higher buffer rates
+
+Offset Accounts:
+- Offset accounts reduce mortgage interest while keeping funds liquid
+- Common Australian strategy: effectively earns the mortgage interest
+  rate tax-free on savings held in the offset
+- 100% offset: every dollar in offset reduces the loan balance for
+  interest calculation purposes
+- Key planning tool: offset vs redraw, offset vs separate savings
 
 Rental Yield:
 - Gross yield = annual rent / property value

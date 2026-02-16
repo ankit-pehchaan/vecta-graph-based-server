@@ -29,6 +29,13 @@ class EducationFundingPreference(str, Enum):
     UNSURE = "unsure"
 
 
+class FinancesCombinedType(str, Enum):
+    """How finances are structured between partners."""
+    FULLY_COMBINED = "fully_combined"
+    PARTIAL = "partial"
+    SEPARATE = "separate"
+
+
 class Marriage(BaseNode):
     """
     Spouse financial information node.
@@ -40,13 +47,25 @@ class Marriage(BaseNode):
     
     node_type: str = Field(default="marriage", frozen=True)
     spouse_age: int | None = Field(default=None, description="Spouse age (for retirement planning timeline)")
+    spouse_occupation: str | None = Field(default=None, description="Spouse occupation")
+    spouse_employment_type: str | None = Field(default=None, description="Spouse employment type (full_time, part_time, etc.)")
     spouse_income_annual: float | None = Field(default=None, description="Spouse annual income (for household financial planning)")
-    finances_combined: bool | None = Field(default=None, description="Are your finances combined with your partner?")
+    finances_combined: FinancesCombinedType | None = Field(default=None, description="How finances are structured: fully_combined, partial (joint + separate), or separate")
+    spouse_super_balance: float | None = Field(default=None, description="Spouse super balance")
+    spouse_super_fund: str | None = Field(default=None, description="Spouse super fund name")
 
     @classmethod
     def collection_spec(cls) -> CollectionSpec | None:
         # Minimal: at least one spouse financial indicator.
         return CollectionSpec(require_any_of=["spouse_age", "spouse_income_annual", "finances_combined"])
+
+
+class SchoolType(str, Enum):
+    """School type enumeration for Australian context."""
+    PUBLIC = "public"
+    CATHOLIC = "catholic"
+    PRIVATE = "private"
+    HOME_SCHOOL = "home_school"
 
 
 class Dependents(BaseNode):
@@ -58,13 +77,16 @@ class Dependents(BaseNode):
     """
     
     node_type: str = Field(default="dependents", frozen=True)
+    has_children: bool | None = Field(default=None, description="Whether the user has children")
     number_of_children: int | None = Field(default=None, description="Number of children")
     children_ages: list[int] | None = Field(default=None, description="Ages of children (for education planning timeline)")
+    education_type: SchoolType | None = Field(default=None, description="School type: public, catholic, private")
     annual_education_cost: float | None = Field(default=None, description="Total annual education expenses for all children")
     child_pathway: ChildPathway | None = Field(default=None, description="Child education/work pathway (school, uni, apprenticeship, work)")
     education_funding_preference: EducationFundingPreference | None = Field(
         default=None, description="Preference for education funding: HECS/HELP vs parent-funded vs mixed"
     )
+    supporting_parents: bool | None = Field(default=None, description="Whether the user is financially supporting parents or other family")
 
     @classmethod
     def collection_spec(cls) -> CollectionSpec | None:

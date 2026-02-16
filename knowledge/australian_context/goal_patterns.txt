@@ -1,0 +1,69 @@
+COMMON AUSTRALIAN FINANCIAL GOAL PATTERNS
+==========================================
+
+This document describes common goal patterns in Australian financial planning,
+how surface goals often mask deeper motivations, and what data points
+are typically needed for each goal type.
+
+RETIREMENT:
+- Surface: "I want to retire" / "retirement planning"
+- Common strategies: Super contributions, investment property, shares
+- Key data needed: Current age, target retirement age, super balance, desired income
+- Australian context: Preservation age 55-60, Age Pension ~$28k single / ~$42k couple
+- ASFA comfortable standard: ~$72k/year couple, ~$51k/year single
+- Common underlying needs: Freedom, security, time with family, travel
+- Typical timeline: 15-25 years
+
+INVESTMENT PROPERTY:
+- Surface: "I want to buy an investment property"
+- Often a strategy for: Wealth creation, family security, retirement income
+- Key data needed: Budget, timeline, existing property/mortgage, income
+- Australian context: Negative gearing, 50% CGT discount, stamp duty varies by state
+- Common underlying needs: Financial independence, legacy, security
+- Typical timeline: 2-5 years to purchase
+
+CHILD EDUCATION:
+- Surface: "Save for kids' education" / "help them through uni"
+- Key data needed: Number of children, ages, school type, university plans
+- Australian context: HECS/HELP covers tuition, living costs $20-25k/year
+- Catholic school ~$5-10k/year, Private ~$15-25k/year, Public minimal
+- Common underlying needs: Giving children a better start, breaking cycle
+- Typical timeline: Based on child's age to uni entry (~5-15 years)
+
+EMERGENCY FUND:
+- Typically inferred, not stated: Low savings relative to expenses
+- Australian context: 3-6 months expenses recommended
+- Key indicators: Savings < 3 × monthly expenses, no offset account
+- Evidence in data: High expenses, low savings, single income household
+
+INCOME PROTECTION:
+- Typically inferred: Physical occupation + mortgage + family
+- Australian context: Most employer super includes basic cover, often inadequate
+- Key indicators: Construction/manual work, large mortgage, dependents
+- Often the user doesn't know they lack adequate cover
+
+DEBT REDUCTION:
+- Surface: "I want to be debt free" / "pay off the mortgage faster"
+- Key data needed: All liabilities, interest rates, repayment schedules
+- Australian context: HECS repayment thresholds (~$54k), mortgage offset strategy
+- Common underlying needs: Peace of mind, freedom, reducing financial stress
+
+INSURANCE REVIEW:
+- Often prompted by: Life event, friend's health scare, feeling of gaps
+- Key data needed: Current cover (life, TPD, income protection, health), amounts
+- Australian context: Default super cover often inadequate for mortgage + family
+- Medicare levy surcharge for high earners without private health
+
+GOAL VS STRATEGY DETECTION:
+- "Investment property" → often a strategy for wealth/security/legacy
+- "Pay off mortgage" → often a strategy for freedom/security
+- "Save more" → strategy for multiple goals (retirement, property, emergency)
+- "Get income protection" → strategy for family protection
+- When a goal IS a strategy, explore what the real underlying goal is
+
+GOAL INFERENCE TRIGGERS:
+- Children aged 10+ with no education savings → child_education
+- Physical occupation + no income protection → income_protection
+- Savings < 3 months expenses → emergency_fund
+- No life insurance + mortgage + dependents → life_insurance
+- High income + no salary sacrifice → super_optimization

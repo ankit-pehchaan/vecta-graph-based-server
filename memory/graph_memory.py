@@ -396,6 +396,8 @@ class GraphMemory(BaseModel):
         Human-readable summary of explored goals for prompt injection.
 
         Used by ConversationAgent to make fact-find questions contextually aware.
+        Includes both emotional context AND a list of already-collected data fields
+        so the agent knows exactly what NOT to re-ask.
         """
         if not self.goal_understandings:
             return "No goals explored yet."
@@ -416,6 +418,22 @@ class GraphMemory(BaseModel):
             if quotes:
                 line += f" | user said: \"{quotes[0]}\""
             parts.append(line)
+
+        # Add a list of already-collected data fields so ConversationAgent
+        # knows what NOT to re-ask.  This is critical for preventing
+        # "Are you married?" after the user mentioned "the missus" 5 turns ago.
+        collected: list[str] = []
+        for node_name, snapshot in self.node_snapshots.items():
+            if not snapshot:
+                continue
+            for field, value in snapshot.items():
+                if value is not None and value != "" and value != {} and value != []:
+                    collected.append(f"  - {node_name}.{field} = {value}")
+        if collected:
+            parts.append("")
+            parts.append("DATA ALREADY COLLECTED (do NOT re-ask these):")
+            parts.extend(collected)
+
         return "\n".join(parts)
 
     # Question tracking methods

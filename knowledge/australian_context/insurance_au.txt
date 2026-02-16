@@ -45,6 +45,15 @@ Disadvantages of super:
 - Income protection limited to 2-year benefit period
 - Less flexibility in policy features
 
+Underinsurance in Australia:
+- Many Australians are significantly underinsured
+- Average life cover through super is approximately $200,000 which is
+  often inadequate to cover mortgage + family living costs
+- Most employer super funds include default life and TPD cover but
+  income protection is less common in default cover
+- Risk: default cover erodes without awareness if premiums rise or
+  balance drops
+
 Recommended approach:
 - Consider a mix: basic cover through super, top-up outside super
 - Review annually, especially after life events (marriage, children, mortgage)

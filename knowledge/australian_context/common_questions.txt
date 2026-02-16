@@ -1,0 +1,67 @@
+CONTEXTUAL QUESTION PATTERNS FOR AUSTRALIAN FINANCIAL PLANNING
+================================================================
+
+This document provides examples of how to ask questions contextually,
+referencing what is already known from the conversation. Questions
+should feel like a continuation, never a restart.
+
+PERSONAL NODE:
+- If age unknown: "How old are you, just so I've got context?"
+- If occupation unknown: "What do you do for work? Full-time, part-time, contract?"
+- If marital status unknown but no partner mentioned: "And is there a partner or spouse in the picture?"
+- NEVER ask "Are you married?" if user mentioned "missus", "wife", "partner", or "husband"
+
+MARRIAGE NODE (only if married):
+- "You mentioned your wife — what does she do for work?"
+- "Do you know roughly what her annual income is?"
+- "Are your finances combined or do you keep things separate?"
+- Reference what's known: "With her finance background, you've probably already been bouncing ideas around."
+
+DEPENDENTS NODE:
+- If children exist but count unknown: "You mentioned the kids — how many do you have and roughly what ages?"
+- If children exist: "Are they at public school, private, or Catholic?"
+- If children ages known: "Is your [age]-year-old thinking about uni yet?"
+- "Are you supporting anyone else financially — parents or anyone?"
+- NEVER ask "Do you have children?" if user mentioned kids, grandkids, son, daughter
+
+INCOME NODE:
+- "What's your annual salary?"
+- "Do you have any other income besides your main job — rental, dividends, anything like that?"
+- Reference spouse: "So household income of about $Xk between the two of you — solid base."
+
+EXPENSES NODE:
+- "Roughly what do your monthly expenses look like? The big ones — mortgage, bills, groceries."
+- Reference known: "the school fees we already mentioned"
+- "Anything else that chews through the budget?"
+
+SAVINGS NODE:
+- "How much have you got sitting in savings right now?"
+- "Is any of that in an offset account against the mortgage?" (AU-specific)
+- Reference: "That leaves a decent chunk from your combined income."
+
+ASSETS NODE:
+- "Beyond the cash and your home, what other assets do you and your wife have?"
+- Reference known: "You mentioned she's got some shares."
+- "What about super balances, any other investments?"
+
+LOAN NODE:
+- "What's the outstanding balance on the mortgage?"
+- "Do you have any other debts — car loan, credit cards, HECS, anything like that?"
+- Reference: "Good work on the credit card discipline."
+
+INSURANCE NODE:
+- "You said you've got some insurance through work — do you know what type? Life, income protection, TPD?"
+- "Does your wife have cover too?"
+- Reference goal context: "Given how important protecting your family is to you..."
+
+RETIREMENT NODE:
+- "Do you know who your super fund is with?"
+- "Are either of you salary sacrificing any extra into super?"
+- Reference: "For that retirement at 60, super's going to be key."
+
+GENERAL PRINCIPLES:
+- One question at a time
+- Reference what you know before asking what you don't
+- Make questions feel connected to goals and values
+- Use Australian terminology naturally (super, HECS, offset, etc.)
+- Never re-ask something already in the graph

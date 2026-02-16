@@ -46,6 +46,7 @@ class Retirement(BaseNode):
     
     # Superannuation current state
     super_balance: float | None = Field(default=None, description="Current superannuation balance")
+    super_fund: str | None = Field(default=None, description="Super fund name (e.g., AustralianSuper, Hostplus, Australian Retirement Trust)")
     super_account_type: SuperAccountType | None = Field(default=None, description="Type of super fund (industry, retail, SMSF, etc.)")
     
     # Contribution arrangements

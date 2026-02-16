@@ -15,6 +15,18 @@ Tax Offsets:
 - Senior Australians and Pensioners Tax Offset (SAPTO)
 - Private Health Insurance Rebate (income-tested)
 
+Household Income Considerations:
+- Combined household income determines Medicare Levy Surcharge thresholds
+  ($93,000 single / $186,000 family without private hospital cover)
+- Family Tax Benefit Part A: income-tested, per child payment for families
+  earning under ~$100,000 combined (varies by number and age of children)
+- Family Tax Benefit Part B: additional payment for single-income families
+  or families where second income is under ~$30,000
+- Private Health Insurance Rebate tiers (income-tested):
+  Singles under $93,000 / Families under $186,000: highest rebate tier
+  Rebate reduces as income increases, nil above $186,000 single / $372,000 family
+- Child Care Subsidy: income-tested, up to 90% for families under $80,000
+
 Deductions:
 - Work-related expenses: must be directly related to earning income
 - Working from home: fixed rate 67 cents per hour (from 2022-23)

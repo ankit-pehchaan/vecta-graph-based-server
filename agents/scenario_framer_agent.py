@@ -14,7 +14,7 @@ Key principles:
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from agno.agent import Agent
 from agno.db.postgres import PostgresDb
@@ -22,6 +22,7 @@ from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, Field
 
 from config import Config
+from utils.json_stream import ResponseTextExtractor
 
 
 class ScenarioFramerResponse(BaseModel):
@@ -137,7 +138,11 @@ class ScenarioFramerAgent:
         return self._agent
     
     def _summarize_financial_context(self, graph_snapshot: dict[str, Any]) -> str:
-        """Extract key financial indicators for scenario generation."""
+        """Extract key financial indicators for scenario generation.
+        
+        Includes specific dollar amounts so scenarios reference the user's
+        actual numbers (e.g. '520k mortgage', '140k spouse income').
+        """
         summary_parts = []
         
         # Personal info
@@ -146,12 +151,26 @@ class ScenarioFramerAgent:
             age = personal.get("age")
             marital = personal.get("marital_status")
             occupation = personal.get("occupation")
+            employment = personal.get("employment_type")
             if age:
                 summary_parts.append(f"Age: {age}")
             if marital:
                 summary_parts.append(f"Relationship: {marital}")
             if occupation:
-                summary_parts.append(f"Occupation: {occupation}")
+                occ_str = occupation
+                if employment:
+                    occ_str += f" ({employment})"
+                summary_parts.append(f"Occupation: {occ_str}")
+        
+        # Marriage / spouse
+        marriage = graph_snapshot.get("Marriage", {})
+        if marriage:
+            spouse_income = marriage.get("spouse_income_annual")
+            spouse_occ = marriage.get("spouse_occupation")
+            if spouse_occ:
+                summary_parts.append(f"Spouse occupation: {spouse_occ}")
+            if spouse_income is not None:
+                summary_parts.append(f"Spouse annual income: ${spouse_income:,.0f}")
         
         # Income
         income = graph_snapshot.get("Income", {})
@@ -159,7 +178,11 @@ class ScenarioFramerAgent:
             streams = income.get("income_streams_annual", {})
             if streams:
                 total = sum(v for v in streams.values() if isinstance(v, (int, float)))
-                summary_parts.append(f"Annual income: ${total:,.0f}")
+                summary_parts.append(f"User annual income: ${total:,.0f}")
+                # Also show household total
+                spouse_inc = (marriage or {}).get("spouse_income_annual", 0) or 0
+                if spouse_inc:
+                    summary_parts.append(f"Household income: ${total + spouse_inc:,.0f}")
         
         # Expenses
         expenses = graph_snapshot.get("Expenses", {})
@@ -173,39 +196,66 @@ class ScenarioFramerAgent:
         savings = graph_snapshot.get("Savings", {})
         if savings:
             total_savings = savings.get("total_savings")
+            offset = savings.get("offset_balance")
             if total_savings is not None:
-                summary_parts.append(f"Savings: ${total_savings:,.0f}")
+                summary_parts.append(f"Total savings: ${total_savings:,.0f}")
+            if offset is not None:
+                summary_parts.append(f"Offset balance: ${offset:,.0f}")
         
         # Dependents
         dependents = graph_snapshot.get("Dependents", {})
         if dependents:
             num_children = dependents.get("number_of_children")
+            children_ages = dependents.get("children_ages")
             if num_children:
-                summary_parts.append(f"Children: {num_children}")
+                ages_str = f" (ages: {children_ages})" if children_ages else ""
+                summary_parts.append(f"Children: {num_children}{ages_str}")
         
-        # Loans/Liabilities
+        # Loans/Liabilities — include specific amounts
         loans = graph_snapshot.get("Loan", {})
         if loans:
             liabilities = loans.get("liabilities", {})
             if liabilities:
-                summary_parts.append(f"Has debt/loans: Yes")
+                loan_parts = []
+                for loan_type, details in liabilities.items():
+                    if isinstance(details, dict):
+                        amount = details.get("outstanding_amount")
+                        rate = details.get("interest_rate")
+                        if amount is not None:
+                            detail = f"{loan_type}: ${amount:,.0f}"
+                            if rate:
+                                detail += f" at {rate*100 if rate < 1 else rate}%"
+                            loan_parts.append(detail)
+                    elif isinstance(details, (int, float)):
+                        loan_parts.append(f"{loan_type}: ${details:,.0f}")
+                if loan_parts:
+                    summary_parts.append(f"Loans: {'; '.join(loan_parts)}")
+        
+        # Super / Retirement
+        retirement = graph_snapshot.get("Retirement", {})
+        if retirement:
+            super_bal = retirement.get("super_balance")
+            target_age = retirement.get("target_retirement_age")
+            if super_bal is not None:
+                summary_parts.append(f"Super balance: ${super_bal:,.0f}")
+            spouse_super = (marriage or {}).get("spouse_super_balance")
+            if spouse_super is not None:
+                summary_parts.append(f"Spouse super: ${spouse_super:,.0f}")
+            if target_age:
+                summary_parts.append(f"Target retirement age: {target_age}")
         
         # Insurance
         insurance = graph_snapshot.get("Insurance", {})
         if insurance:
             coverages = insurance.get("coverages", {})
+            has_ip = insurance.get("has_income_protection")
             if coverages:
                 coverage_types = list(coverages.keys())
                 summary_parts.append(f"Insurance: {', '.join(coverage_types)}")
+            if has_ip is False:
+                summary_parts.append("Income protection: NO")
             else:
                 summary_parts.append("Insurance: None mentioned")
-        
-        # Super
-        retirement = graph_snapshot.get("Retirement", {})
-        if retirement:
-            super_balance = retirement.get("super_balance")
-            if super_balance is not None:
-                summary_parts.append(f"Super balance: ${super_balance:,.0f}")
         
         return "\n".join(summary_parts) if summary_parts else "Limited financial data available"
     
@@ -395,7 +445,101 @@ class ScenarioFramerAgent:
             response.goal_id = goal_candidate.get("goal_id", "unknown")
         return response
 
+    # ------------------------------------------------------------------
+    # Async streaming API
+    # ------------------------------------------------------------------
+
+    def _ensure_stream_agent(self, instructions: str) -> Agent:
+        """Create or update a streaming agent (parse_response=False)."""
+        if not hasattr(self, "_stream_agent") or self._stream_agent is None:
+            self._stream_agent = Agent(
+                model=OpenAIChat(id=self.model_id),
+                instructions=instructions,
+                output_schema=ScenarioFramerResponse,
+                parse_response=False,
+                db=self._get_db(),
+                user_id=self.session_id,
+                add_history_to_context=False,
+                session_state={"scenario_context": {}},
+                add_session_state_to_context=True,
+                markdown=False,
+                debug_mode=False,
+                use_json_mode=True,
+            )
+        else:
+            self._stream_agent.instructions = instructions
+        return self._stream_agent
+
+    async def aprocess_stream(
+        self,
+        user_message: str,
+        goal_candidate: dict[str, Any],
+        graph_snapshot: dict[str, Any],
+        current_turn: int = 1,
+        scenario_history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[str | ScenarioFramerResponse]:
+        """
+        Streaming version of aprocess.
+
+        Yields ``str`` chunks for ``response_text``, then the final
+        ``ScenarioFramerResponse`` with all metadata.
+        """
+        prompt_template = self._load_prompt()
+        financial_context = self._summarize_financial_context(graph_snapshot)
+
+        history_str = "None (first turn)"
+        if scenario_history:
+            history_parts = []
+            for turn in scenario_history:
+                role = turn.get("role", "unknown")
+                content = turn.get("content", "")
+                history_parts.append(f"{role}: {content}")
+            history_str = "\n".join(history_parts)
+
+        prompt = prompt_template.format(
+            user_message=user_message,
+            goal_id=goal_candidate.get("goal_id", "unknown"),
+            goal_description=goal_candidate.get("description", ""),
+            goal_confidence=goal_candidate.get("confidence", 0.0),
+            deduced_from=", ".join(goal_candidate.get("deduced_from", [])),
+            financial_context=financial_context,
+            graph_snapshot=json.dumps(graph_snapshot, indent=2),
+            current_turn=current_turn,
+            max_turns=self.MAX_TURNS,
+            scenario_history=history_str,
+        )
+
+        agent = self._ensure_stream_agent(prompt)
+
+        extractor = ResponseTextExtractor()
+        stream = agent.arun(
+            "Analyze the user's response and generate the next turn in the scenario conversation. "
+            "Help them emotionally realize the importance of this goal through reflection, not persuasion.",
+            stream=True,
+        )
+        async for event in stream:
+            chunk_text = ""
+            if hasattr(event, "content") and event.content:
+                chunk_text = event.content
+            elif hasattr(event, "delta") and event.delta:
+                chunk_text = event.delta
+            if chunk_text:
+                delta = extractor.feed(chunk_text)
+                if delta:
+                    yield delta
+
+        try:
+            parsed = ScenarioFramerResponse.model_validate_json(extractor.buffer)
+        except Exception:
+            parsed = ScenarioFramerResponse(response_text=extractor.buffer)
+
+        if not parsed.goal_id:
+            parsed.goal_id = goal_candidate.get("goal_id", "unknown")
+        yield parsed
+
     def cleanup(self) -> None:
         """Clean up agent resources."""
         self._agent = None
+        if hasattr(self, "_stream_agent"):
+            self._stream_agent = None
 

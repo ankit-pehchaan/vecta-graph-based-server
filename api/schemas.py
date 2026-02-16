@@ -71,50 +71,6 @@ class WSSessionStart(BaseModel):
     initial_context: str | None = None
 
 
-class WSCalculation(BaseModel):
-    """Server → Client: Calculation results."""
-    type: str = "calculation"
-    calculation_type: str
-    result: dict[str, Any] = {}
-    can_calculate: bool
-    missing_data: list[str] = []
-    message: str
-    data_used: list[str] = []
-
-
-class WSVisualization(BaseModel):
-    """Server → Client: Visualization data."""
-    type: str = "visualization"
-    calculation_type: str | None = None
-    inputs: dict[str, Any] = {}
-    chart_type: str
-    data: dict[str, Any] = {}
-    title: str
-    description: str
-    config: dict[str, Any] = {}
-    charts: list[dict[str, Any]] = []
-
-
-class WSModeSwitch(BaseModel):
-    """Server → Client: Mode change notification."""
-    type: str = "mode_switch"
-    mode: str
-    previous_mode: str | None = None
-
-
-class WSTraversalPaused(BaseModel):
-    """Server → Client: Traversal paused notification."""
-    type: str = "traversal_paused"
-    paused_node: str | None = None
-    message: str = ""
-
-
-class WSResumePrompt(BaseModel):
-    """Server → Client: Ask user to resume."""
-    type: str = "resume_prompt"
-    message: str = ""
-
-
 class WSGoalQualification(BaseModel):
     """Server → Client: Ask user to confirm a deduced goal."""
     type: str = "goal_qualification"
@@ -152,7 +108,6 @@ class WSStreamEnd(BaseModel):
     # Optional fields for specific modes
     exploration_context: dict[str, Any] | None = None
     scenario_context: dict[str, Any] | None = None
-    visualization: dict[str, Any] | None = None
     phase1_summary: str | None = None
 
 

@@ -21,17 +21,29 @@ class MaritalStatus(str, Enum):
     WIDOWED = "widowed"
 
 
+class EmploymentType(str, Enum):
+    """Employment type enumeration."""
+    FULL_TIME = "full_time"
+    PART_TIME = "part_time"
+    CASUAL = "casual"
+    CONTRACT = "contract"
+    SELF_EMPLOYED = "self_employed"
+    RETIRED = "retired"
+    NOT_WORKING = "not_working"
+
+
 class Personal(BaseNode):
     """
     Personal information node affecting financial planning.
     
-    Contains age, occupation, and marital status.
+    Contains age, occupation, employment type, and marital status.
     Excludes private details like exact address, education degree, etc.
     """
     
     node_type: str = Field(default="personal", frozen=True)
     age: int | None = Field(default=None, description="Age in years")
     occupation: str | None = Field(default=None, description="Current occupation")
+    employment_type: EmploymentType | None = Field(default=None, description="Employment type (full-time, part-time, contract, etc.)")
     marital_status: MaritalStatus | None = Field(default=None, description="Marital status")
 
     @classmethod
